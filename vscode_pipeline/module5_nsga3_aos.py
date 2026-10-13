@@ -650,12 +650,19 @@ if __name__ == "__main__":
     print(f"  Guided front F3 range: {res.F[:, 2].min():.3f} .. {res.F[:, 2].max():.3f}")
 
     print("\n--- Feasibility check ---")
-    rep = StructureRepair(pairs, st)
-    ok = True
+    # re-repair with the same rule the guided run used: a valid
+    # packing is a fixed point of the repair
+    rep = StructureRepair(pairs, st, preferred=list(ilp_k))
+    fixed_point = all(
+        rep.matched_ids(np.array([p.pair_id in m for p in pairs])) == m
+        for m in res.matched_sets)
+    disjoint = True
     for m in res.matched_sets:
-        x = np.array([p.pair_id in m for p in pairs])
-        ok &= rep.matched_ids(x) == m
-    print(f"  Every front solution is a disjoint cycle/chain packing: {ok}")
+        mask, chosen = rep.repair(np.array([p.pair_id in m for p in pairs]))
+        nodes = [v for k in chosen for v in st.nodes[k]]
+        disjoint &= len(nodes) == len(set(nodes)) == len(m)
+    print(f"  Every front solution is a disjoint cycle/chain packing: "
+          f"{fixed_point and disjoint}")
     alt_ids = {p.pair_id for p in pool.altruists()}
     print(f"  Altruists only appear in chains: "
           f"{all(not (set(st.nodes[k]) & alt_ids) for k in range(len(st)) if st.kind[k] == 'cycle')}")
