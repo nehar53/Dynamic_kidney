@@ -1,13 +1,38 @@
-import numpy as np
 import random
 from dataclasses import dataclass, field
-from typing import List, Tuple
+from typing import List, Optional, Tuple
+
+import numpy as np
 
 # ============================================================
 # MODULE 1: SAIDMAN PATIENT GENERATOR
 # ANZKX-Calibrated Synthetic Pool Generator
 # Paper 2 — Dynamic KEP Implementation
+# Concept note Section 4.1, Table 2
 # ============================================================
+#
+# Saidman et al. (2006) probabilistic model, calibrated to ANZKX:
+#   - patient and donor blood types from ANZDATA frequencies
+#   - 30% of patients highly sensitised (cPRA >= 80%)
+#   - a pair joins the KEP only if it is INCOMPATIBLE:
+#       ABO-incompatible  OR  positive crossmatch with own donor
+#       (positive crossmatch happens with probability = cPRA)
+#   - 8% of arrivals are altruistic (non-directed) donors.
+#     They have a donor but NO patient, can only give a kidney,
+#     and never count as patients in F2-F4.
+#
+# Virtual crossmatch (used by module 3 for every edge i -> j):
+#   positive with probability cPRA_j, drawn ONCE per
+#   (donor, patient) couple, so the same edge gives the same
+#   answer in every round and every configuration.
+#
+# HLA limitation (concept note Section 3.2): HLA alleles are a
+# population-frequency proxy, NOT clinical HLA typing or a real
+# virtual crossmatch.
+#
+# Randomness: every function takes an optional `rng`
+# (np.random.Generator or RandomState). If omitted, the global
+# numpy RNG is used, so module 7's per-round seeding still works.
 
 # --- Blood Type Frequencies (ANZDATA 2026) ---
 BLOOD_TYPE_PROBS = {
@@ -27,36 +52,22 @@ ABO_COMPATIBILITY = {
     'AB': ['AB']                   # AB only donates to AB
 }
 
-# HLA Loci considered (HLA-A, HLA-B, HLA-DR = 6 alleles)
+# --- Sensitisation (ANZDATA 2026) ---
+HIGH_CPRA_RATE = 0.30          # share of patients with cPRA >= 0.80
+CPRA_THRESHOLD = 0.80
+CPRA_HIGH_MAX = 0.99           # cPRA = 1.00 could never be matched
+
+# --- Altruistic donors (ANZKX programme) ---
+ALTRUISTIC_RATE = 0.08
+
+# --- HLA proxy: HLA-A, HLA-B, HLA-DR, two alleles each ---
 HLA_LOCI = 6
-
-@dataclass
-class Patient:
-    """Represents a single donor-recipient incompatible pair."""
-    pair_id: int
-    blood_type_patient: str      # Recipient blood type
-    blood_type_donor: str        # Donor blood type
-    cpra: float                  # Panel Reactive Antibody (0 to 1)
-    is_highly_sensitised: bool   # cPRA >= 0.80
-    hla_patient: np.ndarray      # HLA profile recipient (6 loci)
-    hla_donor: np.ndarray        # HLA profile donor (6 loci)
-    is_altruistic: bool          # Altruistic donor flag
-    hospital_node: str           # ANZKX centre
-    waiting_time: int            # Rounds waiting (starts at 0)
-    arrival_round: int           # Which round they arrived
-
-@dataclass
-class Pool:
-    """Represents the active KEP pool at a given round."""
-    pairs: List[Patient] = field(default_factory=list)
-    round_number: int = 0
-
-    def size(self):
-        return len(self.pairs)
-
-    def get_highly_sensitised(self):
-        return [p for p in self.pairs if p.is_highly_sensitised]
-
+N_ALLELES_PER_LOCUS = 8
+# Skewed (Zipf-like) allele frequencies: a few common alleles,
+# many rare ones. Expected mismatches between unrelated people
+# is then about 4-5 of 6, close to unrelated-donor reality.
+_ALLELE_P = 1.0 / np.arange(1, N_ALLELES_PER_LOCUS + 1)
+ALLELE_FREQS = _ALLELE_P / _ALLELE_P.sum()
 
 # ANZKX Hospital Nodes
 ANZKX_NODES = [
@@ -69,7 +80,6 @@ ANZKX_NODES = [
 ]
 
 # Node contribution weights (approximated from DonateLife 2024)
-# State level distribution
 NODE_WEIGHTS = {
     'Perth':     0.12,
     'Adelaide':  0.10,
@@ -80,198 +90,280 @@ NODE_WEIGHTS = {
 }
 
 
-def generate_blood_type() -> str:
+@dataclass
+class Patient:
+    """
+    A donor-recipient incompatible pair, or an altruistic donor.
+
+    For an altruistic donor (is_altruistic=True):
+      blood_type_patient = None, hla_patient = None, cpra = 0.0,
+      is_highly_sensitised = False  (there is no patient).
+    """
+    pair_id: int
+    blood_type_patient: Optional[str]   # Recipient blood type
+    blood_type_donor: str               # Donor blood type
+    cpra: float                         # Panel Reactive Antibody (0 to 1)
+    is_highly_sensitised: bool          # cPRA >= 0.80
+    hla_patient: Optional[np.ndarray]   # HLA profile recipient (6 loci)
+    hla_donor: np.ndarray               # HLA profile donor (6 loci)
+    is_altruistic: bool                 # Altruistic donor flag
+    hospital_node: str                  # ANZKX centre
+    waiting_time: int                   # Rounds waiting (starts at 0)
+    arrival_round: int                  # Which round they arrived
+    xm_salt: int = 0                    # random key for virtual crossmatch
+    incompatibility: str = ""           # 'ABO', 'XM' (crossmatch) or ''
+
+
+@dataclass
+class Pool:
+    """Represents the active KEP pool at a given round."""
+    pairs: List[Patient] = field(default_factory=list)
+    round_number: int = 0
+
+    def size(self):
+        return len(self.pairs)
+
+    def patients(self):
+        """Pairs with a patient (altruistic donors excluded)."""
+        return [p for p in self.pairs if not p.is_altruistic]
+
+    def altruists(self):
+        return [p for p in self.pairs if p.is_altruistic]
+
+    def get_highly_sensitised(self):
+        return [p for p in self.pairs
+                if p.is_highly_sensitised and not p.is_altruistic]
+
+
+# ============================================================
+# RANDOM HELPERS
+# ============================================================
+
+def _rng(rng=None):
+    """Use the given RNG, or the global numpy RNG."""
+    return np.random if rng is None else rng
+
+
+def _uniform(rng, low=0.0, high=1.0) -> float:
+    return float(_rng(rng).uniform(low, high))
+
+
+def _choice(options, probs, rng=None):
+    idx = _rng(rng).choice(len(options), p=probs)
+    return options[int(idx)]
+
+
+# ============================================================
+# ATTRIBUTE GENERATORS
+# ============================================================
+
+def generate_blood_type(rng=None) -> str:
     """Generate blood type using ANZDATA 2026 frequencies."""
-    types = list(BLOOD_TYPE_PROBS.keys())
-    probs = list(BLOOD_TYPE_PROBS.values())
-    return np.random.choice(types, p=probs)
+    return _choice(list(BLOOD_TYPE_PROBS.keys()),
+                   list(BLOOD_TYPE_PROBS.values()), rng)
 
 
-def generate_cpra() -> float:
+def generate_cpra(high: Optional[bool] = None, rng=None) -> float:
     """
-    Generate cPRA value.
-    30% of patients have cPRA >= 0.80 (highly sensitised).
-    Remaining 70% have cPRA < 0.80.
-    Source: ANZDATA 2026.
+    Generate cPRA value (0 to 1).
+
+    high=True  -> highly sensitised, cPRA in [0.80, 0.99]
+    high=False -> cPRA < 0.80: half unsensitised (0-0.05),
+                  half moderately sensitised (0.05-0.80)
+    high=None  -> high with probability 30% (ANZDATA 2026)
     """
-    if np.random.random() < 0.30:
-        # Highly sensitised: cPRA between 0.80 and 1.0
-        return np.random.uniform(0.80, 1.0)
-    else:
-        # Not highly sensitised: cPRA between 0.0 and 0.80
-        return np.random.uniform(0.0, 0.80)
+    if high is None:
+        high = _uniform(rng) < HIGH_CPRA_RATE
+    if high:
+        return _uniform(rng, CPRA_THRESHOLD, CPRA_HIGH_MAX)
+    if _uniform(rng) < 0.5:
+        return _uniform(rng, 0.0, 0.05)
+    return _uniform(rng, 0.05, CPRA_THRESHOLD - 1e-6)
 
 
-def generate_hla_profile() -> np.ndarray:
+def generate_hla_profile(rng=None) -> np.ndarray:
     """
-    Generate simplified HLA profile across 6 loci.
-    Each locus has allele value 0 or 1 (simplified binary proxy).
-    This is a population-level proxy only.
-    Not representative of actual HLA diversity.
-    Source: Population frequency approximation.
+    HLA profile across 6 loci (HLA-A, B, DR x 2 alleles).
+    Each locus holds an allele index drawn from skewed
+    population frequencies. Population-level proxy only.
     """
-    return np.random.randint(0, 2, size=HLA_LOCI)
+    r = _rng(rng)
+    return np.array([r.choice(N_ALLELES_PER_LOCUS, p=ALLELE_FREQS)
+                     for _ in range(HLA_LOCI)])
 
 
-def compute_hla_mismatch(
-    hla_donor: np.ndarray,
-    hla_patient: np.ndarray
-) -> int:
-    """
-    Compute HLA mismatch count between donor and patient.
-    m_ij = number of mismatched loci out of 6.
-    """
-    return int(np.sum(hla_donor != hla_patient))
+def generate_hospital_node(rng=None) -> str:
+    """Assign a pair to an ANZKX centre, weighted by state share."""
+    return _choice(list(NODE_WEIGHTS.keys()),
+                   list(NODE_WEIGHTS.values()), rng)
 
 
-def compute_omega_hla(
-    hla_donor: np.ndarray,
-    hla_patient: np.ndarray
-) -> float:
-    """
-    Compute HLA compatibility weight omega_HLA.
-    omega_HLA(i,j) = 1 - m_ij / 6
-    Range: 0 (worst) to 1 (perfect match).
-    Proxy measure only — not actual clinical crossmatch.
-    """
-    m_ij = compute_hla_mismatch(hla_donor, hla_patient)
-    return 1.0 - (m_ij / HLA_LOCI)
+# ============================================================
+# COMPATIBILITY FUNCTIONS (used by module 3)
+# ============================================================
 
-
-def is_abo_compatible(
-    donor_blood: str,
-    recipient_blood: str
-) -> bool:
-    """
-    Check ABO blood type compatibility.
-    Returns True if donor can donate to recipient.
-    """
+def is_abo_compatible(donor_blood: str,
+                      recipient_blood: Optional[str]) -> bool:
+    """True if a donor of this blood type can give to the recipient."""
+    if recipient_blood is None:          # altruistic donor: no patient
+        return False
     return recipient_blood in ABO_COMPATIBILITY[donor_blood]
 
 
-def generate_hospital_node() -> str:
-    """
-    Assign patient pair to an ANZKX hospital node.
-    Weighted by approximate state contribution.
-    """
-    nodes = list(NODE_WEIGHTS.keys())
-    weights = list(NODE_WEIGHTS.values())
-    return np.random.choice(nodes, p=weights)
+def compute_hla_mismatch(hla_donor: np.ndarray,
+                         hla_patient: np.ndarray) -> int:
+    """m_ij = number of mismatched loci out of 6."""
+    return int(np.sum(hla_donor != hla_patient))
 
 
-def generate_patient_pair(
-    pair_id: int,
-    arrival_round: int,
-    is_altruistic: bool = False
-) -> Patient:
+def compute_omega_hla(hla_donor: np.ndarray,
+                      hla_patient: np.ndarray) -> float:
     """
-    Generate a single incompatible donor-recipient pair.
-    Patient and donor are ABO incompatible by definition
-    (they would not need KEP otherwise).
+    omega_HLA(i,j) = 1 - m_ij / 6   (concept note Eq. 3)
+    Range 0 (worst) to 1 (perfect). Proxy measure only.
     """
-    # Generate blood types ensuring incompatibility
-    # Keep generating until we get an incompatible pair
-    max_attempts = 100
-    for _ in range(max_attempts):
-        blood_donor = generate_blood_type()
-        blood_patient = generate_blood_type()
-        # Pair joins KEP because they are incompatible
+    return 1.0 - compute_hla_mismatch(hla_donor, hla_patient) / HLA_LOCI
+
+
+def is_crossmatch_negative(donor_pair: Patient,
+                           patient_pair: Patient) -> bool:
+    """
+    Virtual crossmatch for donor of `donor_pair` -> patient of
+    `patient_pair`. Positive (incompatible) with probability
+    cPRA of the patient. The draw is fixed for each
+    (donor, patient) couple, so it never changes between rounds.
+    """
+    if patient_pair.is_altruistic:
+        return False
+    u = np.random.default_rng(
+        [donor_pair.xm_salt, patient_pair.xm_salt, 7]).random()
+    return u >= patient_pair.cpra
+
+
+def is_compatible(donor_pair: Patient, patient_pair: Patient) -> bool:
+    """Medical compatibility: ABO AND negative virtual crossmatch."""
+    return (is_abo_compatible(donor_pair.blood_type_donor,
+                              patient_pair.blood_type_patient)
+            and is_crossmatch_negative(donor_pair, patient_pair))
+
+
+# ============================================================
+# PAIR / ALTRUIST GENERATION
+# ============================================================
+
+def generate_patient_pair(pair_id: int, arrival_round: int,
+                          is_altruistic: bool = False,
+                          rng=None) -> Patient:
+    """
+    Generate one incompatible donor-recipient pair (Saidman).
+
+    The sensitisation class is drawn first (30% high), then blood
+    types and the own-donor crossmatch are redrawn until the pair
+    is incompatible. This keeps the 30% high-cPRA share in the
+    POOL, as in Table 2.
+    If is_altruistic=True an altruistic donor is returned instead.
+    """
+    if is_altruistic:
+        return generate_altruistic_donor(pair_id, arrival_round, rng)
+
+    r = _rng(rng)
+    cpra = generate_cpra(rng=rng)
+    while True:
+        blood_donor = generate_blood_type(rng)
+        blood_patient = generate_blood_type(rng)
         if not is_abo_compatible(blood_donor, blood_patient):
+            reason = "ABO"
             break
-   
-    cpra = generate_cpra()
-    hla_patient = generate_hla_profile()
-    hla_donor = generate_hla_profile()
-    node = generate_hospital_node()
+        if _uniform(rng) < cpra:          # positive own-donor crossmatch
+            reason = "XM"
+            break
+        # compatible pair: transplanted directly, never joins KEP
 
     return Patient(
         pair_id=pair_id,
         blood_type_patient=blood_patient,
         blood_type_donor=blood_donor,
         cpra=cpra,
-        is_highly_sensitised=(cpra >= 0.80),
-        hla_patient=hla_patient,
-        hla_donor=hla_donor,
-        is_altruistic=is_altruistic,
-        hospital_node=node,
+        is_highly_sensitised=(cpra >= CPRA_THRESHOLD),
+        hla_patient=generate_hla_profile(rng),
+        hla_donor=generate_hla_profile(rng),
+        is_altruistic=False,
+        hospital_node=generate_hospital_node(rng),
         waiting_time=0,
-        arrival_round=arrival_round
+        arrival_round=arrival_round,
+        xm_salt=int(r.randint(0, 2 ** 31 - 1)),
+        incompatibility=reason,
     )
 
 
-def generate_initial_pool(
-    n_pairs: int = 75,
-    seed: int = 42
-) -> Tuple[Pool, int]:
+def generate_altruistic_donor(pair_id: int, arrival_round: int,
+                              rng=None) -> Patient:
+    """An altruistic (non-directed) donor: donor only, no patient."""
+    r = _rng(rng)
+    return Patient(
+        pair_id=pair_id,
+        blood_type_patient=None,
+        blood_type_donor=generate_blood_type(rng),
+        cpra=0.0,
+        is_highly_sensitised=False,
+        hla_patient=None,
+        hla_donor=generate_hla_profile(rng),
+        is_altruistic=True,
+        hospital_node=generate_hospital_node(rng),
+        waiting_time=0,
+        arrival_round=arrival_round,
+        xm_salt=int(r.randint(0, 2 ** 31 - 1)),
+        incompatibility="",
+    )
+
+
+def generate_arrival(pair_id: int, arrival_round: int,
+                     rng=None) -> Patient:
+    """One arrival: altruistic donor with probability 8%, else a pair."""
+    if _uniform(rng) < ALTRUISTIC_RATE:
+        return generate_altruistic_donor(pair_id, arrival_round, rng)
+    return generate_patient_pair(pair_id, arrival_round, rng=rng)
+
+
+def generate_initial_pool(n_pairs: int = 75, seed: int = 42,
+                          initial_wait_max: int = 0,
+                          rng=None) -> Tuple[Pool, int]:
     """
-    Generate initial ANZKX-calibrated synthetic pool.
-    Default pool size 75 (midpoint of 60 to 90 range).
-    8% altruistic donors included.
-    Source: ANZKX Programme Page.
+    Generate the initial ANZKX-calibrated pool.
+
+    n_pairs          pool size (75 = midpoint of 60-90)
+    seed             seeds the global numpy/random RNGs (as before)
+    initial_wait_max if > 0, waiting times are drawn uniformly from
+                     0..initial_wait_max-1 so the initial pool does
+                     not all reach the withdrawal threshold tau in
+                     the same round. 0 = everyone starts at 0.
+
+    Each member is altruistic with probability 8%.
+    Returns (pool, next available pair ID).
     """
     np.random.seed(seed)
     random.seed(seed)
-
     pool = Pool(round_number=0)
-    n_altruistic = max(1, int(n_pairs * 0.08))
-    n_incompatible = n_pairs - n_altruistic
-
-    pair_id = 0
-
-    # Generate incompatible pairs
-    for _ in range(n_incompatible):
-        pair = generate_patient_pair(
-            pair_id=pair_id,
-            arrival_round=0,
-            is_altruistic=False
-        )
-        pool.pairs.append(pair)
-        pair_id += 1
-
-    # Generate altruistic donors
-    for _ in range(n_altruistic):
-        pair = generate_patient_pair(
-            pair_id=pair_id,
-            arrival_round=0,
-            is_altruistic=True
-        )
-        pool.pairs.append(pair)
-        pair_id += 1
-
-    return pool, pair_id  # Return pool and next available ID
+    for pair_id in range(n_pairs):
+        p = generate_arrival(pair_id, arrival_round=0, rng=rng)
+        if initial_wait_max > 0:
+            p.waiting_time = int(_rng(rng).randint(0, initial_wait_max))
+        pool.pairs.append(p)
+    return pool, n_pairs
 
 
-def generate_arrivals(
-    n_arrivals: int,
-    next_pair_id: int,
-    arrival_round: int
-) -> Tuple[List[Patient], int]:
+def generate_arrivals(n_arrivals: int, next_pair_id: int,
+                      arrival_round: int,
+                      rng=None) -> Tuple[List[Patient], int]:
     """
-    Generate new arriving pairs for a given round.
-    Used in pool evolution equation A_t.
+    New arrivals A_t for one round (count comes from module 2's
+    Poisson draw). Each arrival is altruistic with probability 8%,
+    so altruists keep arriving even when n_arrivals is small.
     """
     new_pairs = []
-    n_altruistic = max(0, int(n_arrivals * 0.08))
-    n_incompatible = n_arrivals - n_altruistic
-
-    for _ in range(n_incompatible):
-        pair = generate_patient_pair(
-            pair_id=next_pair_id,
-            arrival_round=arrival_round,
-            is_altruistic=False
-        )
-        new_pairs.append(pair)
+    for _ in range(n_arrivals):
+        new_pairs.append(generate_arrival(next_pair_id, arrival_round, rng))
         next_pair_id += 1
-
-    for _ in range(n_altruistic):
-        pair = generate_patient_pair(
-            pair_id=next_pair_id,
-            arrival_round=arrival_round,
-            is_altruistic=True
-        )
-        new_pairs.append(pair)
-        next_pair_id += 1
-
     return new_pairs, next_pair_id
 
 
@@ -281,83 +373,97 @@ def generate_arrivals(
 
 if __name__ == "__main__":
 
-    print("=" * 50)
+    print("=" * 55)
     print("MODULE 1: SAIDMAN GENERATOR TEST")
-    print("ANZKX-Calibrated Synthetic Pool")
-    print("=" * 50)
+    print("ANZKX-Calibrated Synthetic Pool (concept note 4.1)")
+    print("=" * 55)
 
-    # Generate initial pool
     pool, next_id = generate_initial_pool(n_pairs=75, seed=42)
+    pts = pool.patients()
+    print(f"\nInitial pool: {pool.size()} "
+          f"({len(pts)} pairs + {len(pool.altruists())} altruists)")
 
-    print(f"\nInitial Pool Size: {pool.size()}")
+    # Large sample for calibration checks
+    big, _ = generate_initial_pool(n_pairs=5000, seed=1)
+    bp = big.patients()
 
-    # Blood type distribution check
-    blood_counts = {'O': 0, 'A': 0, 'B': 0, 'AB': 0}
-    for p in pool.pairs:
-        blood_counts[p.blood_type_patient] += 1
+    print("\n--- Altruistic Donors (expected ~8%) ---")
+    print(f"  {len(big.altruists()) / big.size() * 100:.1f}% "
+          f"of 5000 generated")
 
-    print("\n--- Patient Blood Type Distribution ---")
-    for bt, count in blood_counts.items():
-        pct = count / pool.size() * 100
-        print(f"  {bt}: {count} ({pct:.1f}%)")
-    print("  Expected: O=49% A=38% B=10% AB=3%")
+    print("\n--- cPRA (expected 30% highly sensitised) ---")
+    print(f"  Highly sensitised: "
+          f"{len(big.get_highly_sensitised()) / len(bp) * 100:.1f}%")
 
-    # cPRA distribution check
-    highly_sensitised = pool.get_highly_sensitised()
-    pra_pct = len(highly_sensitised) / pool.size() * 100
-    print(f"\n--- cPRA Distribution ---")
-    print(f"  Highly sensitised (cPRA>=80%): "
-          f"{len(highly_sensitised)} ({pra_pct:.1f}%)")
-    print(f"  Expected: ~30%")
+    print("\n--- Why pairs are in the KEP ---")
+    abo = sum(p.incompatibility == "ABO" for p in bp)
+    print(f"  ABO-incompatible:      {abo / len(bp) * 100:.1f}%")
+    print(f"  Positive crossmatch:   {(len(bp) - abo) / len(bp) * 100:.1f}%")
 
-    # Altruistic donors
-    altruistic = [p for p in pool.pairs if p.is_altruistic]
-    alt_pct = len(altruistic) / pool.size() * 100
-    print(f"\n--- Altruistic Donors ---")
-    print(f"  Count: {len(altruistic)} ({alt_pct:.1f}%)")
-    print(f"  Expected: ~8%")
+    print("\n--- Blood Types in KEP pool (patients / donors) ---")
+    print("  Population: O=49% A=38% B=10% AB=3%")
+    print("  (KEP pools are skewed: O patients are hard to match)")
+    for bt in BLOOD_TYPE_PROBS:
+        pat = sum(p.blood_type_patient == bt for p in bp) / len(bp) * 100
+        don = sum(p.blood_type_donor == bt for p in bp) / len(bp) * 100
+        print(f"  {bt:>2}: patients {pat:5.1f}%   donors {don:5.1f}%")
 
-    # Hospital node distribution
-    print(f"\n--- Hospital Node Distribution ---")
-    node_counts = {n: 0 for n in ANZKX_NODES}
-    for p in pool.pairs:
-        node_counts[p.hospital_node] += 1
-    for node, count in node_counts.items():
-        print(f"  {node}: {count}")
+    print("\n--- Hospital Nodes (initial pool) ---")
+    for node in ANZKX_NODES:
+        n = sum(p.hospital_node == node for p in pool.pairs)
+        print(f"  {node:<10} {n}")
 
-    # HLA mismatch example
-    p1 = pool.pairs[0]
-    p2 = pool.pairs[1]
-    omega = compute_omega_hla(p1.hla_donor, p2.hla_patient)
-    mismatch = compute_hla_mismatch(p1.hla_donor, p2.hla_patient)
-    print(f"\n--- HLA Mismatch Example ---")
-    print(f"  Pair 0 donor vs Pair 1 patient:")
-    print(f"  Mismatch count: {mismatch}/6")
-    print(f"  omega_HLA: {omega:.3f}")
+    print("\n--- HLA Mismatch (expected mean ~4-5 of 6) ---")
+    m = [compute_hla_mismatch(bp[i].hla_donor, bp[i + 1].hla_patient)
+         for i in range(0, 2000, 2)]
+    print(f"  Mean mismatches: {np.mean(m):.2f} / 6   "
+          f"mean omega_HLA: {1 - np.mean(m) / 6:.3f}")
 
-    # ABO compatibility example
-    print(f"\n--- ABO Compatibility Example ---")
-    print(f"  Pair 0: donor={p1.blood_type_donor} "
-          f"patient={p1.blood_type_patient}")
-    print(f"  Pair 1: donor={p2.blood_type_donor} "
-          f"patient={p2.blood_type_patient}")
-    compat = is_abo_compatible(
-        p1.blood_type_donor,
-        p2.blood_type_patient
-    )
-    print(f"  Pair 0 donor -> Pair 1 patient compatible: {compat}")
+    print("\n--- Compatibility between pairs (ABO + crossmatch) ---")
+    sample = bp[:300]
+    abo_ok = sum(is_abo_compatible(a.blood_type_donor, b.blood_type_patient)
+                 for a in sample for b in sample if a is not b)
+    full_ok = sum(is_compatible(a, b)
+                  for a in sample for b in sample if a is not b)
+    tot = len(sample) * (len(sample) - 1)
+    print(f"  ABO compatible:            {abo_ok / tot * 100:.1f}%")
+    print(f"  ABO + negative crossmatch: {full_ok / tot * 100:.1f}%")
+    hi = [p for p in sample if p.is_highly_sensitised]
+    lo = [p for p in sample if not p.is_highly_sensitised]
+    hi_in = np.mean([sum(is_compatible(d, p) for d in sample if d is not p)
+                     for p in hi])
+    lo_in = np.mean([sum(is_compatible(d, p) for d in sample if d is not p)
+                     for p in lo])
+    print(f"  Compatible donors per high-cPRA patient: {hi_in:.1f}")
+    print(f"  Compatible donors per low-cPRA patient:  {lo_in:.1f}")
 
-    # Test arrivals
-    print(f"\n--- Testing Arrivals ---")
-    new_arrivals, next_id = generate_arrivals(
-        n_arrivals=5,
-        next_pair_id=next_id,
-        arrival_round=1
-    )
-    print(f"  Generated {len(new_arrivals)} new arrivals")
-    print(f"  Next pair ID: {next_id}")
+    print("\n--- Crossmatch is fixed per (donor, patient) couple ---")
+    a, b = bp[0], bp[1]
+    print(f"  Same answer on repeat: "
+          f"{all(is_crossmatch_negative(a, b) == is_crossmatch_negative(a, b) for _ in range(5))}")
 
-    print("\n" + "=" * 50)
+    print("\n--- Altruists never receive a kidney ---")
+    alt = big.altruists()[0]
+    print(f"  Any donor -> altruist compatible: "
+          f"{any(is_compatible(d, alt) for d in bp[:200])}")
+
+    print("\n--- Arrivals (8% altruistic even for small batches) ---")
+    np.random.seed(3)
+    alts = 0
+    nid = next_id
+    for r in range(1, 201):
+        new, nid = generate_arrivals(6, nid, r)
+        alts += sum(p.is_altruistic for p in new)
+    print(f"  200 rounds x 6 arrivals: {alts} altruists "
+          f"({alts / 1200 * 100:.1f}%)")
+
+    print("\n--- Reproducibility ---")
+    p1, _ = generate_initial_pool(75, seed=42)
+    p2, _ = generate_initial_pool(75, seed=42)
+    print(f"  Same seed -> same pool: "
+          f"{[x.cpra for x in p1.pairs] == [y.cpra for y in p2.pairs]}")
+
+    print("\n" + "=" * 55)
     print("MODULE 1 COMPLETE")
     print("Ready for Module 2: Pool Evolution")
-    print("=" * 50)
+    print("=" * 55)
