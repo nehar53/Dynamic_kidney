@@ -12,7 +12,7 @@ import pandas as pd
 from module1_generator import CPRA_THRESHOLD, HLA_LOCI, NODE_WEIGHTS, Patient, Pool
 from module2_pool_evolution import LAMBDA_ARRIVALS, PoolEvolution
 from module3_logistics import is_cit_feasible
-from module7_clearing import simulate_trajectory
+from module7_clearing import BATCH_THRESHOLD, simulate_trajectory
 from module8_stats import compare_many_metrics, format_mean_sd, summary_table
 
 # ============================================================
@@ -31,10 +31,12 @@ from module8_stats import compare_many_metrics, format_mean_sd, summary_table
 #            "# ALTERNATIVE NAME i: Pair i" / "Altruist i"
 #            then edge lines "u,v,w"
 #   legacy:  "n" / "i,name" lines / "n,m" / edge lines "u,v,w"
-# Optional companion file with the same stem and extension .dat
-# or .csv holding per-vertex data (columns detected by name:
-# id/pair, pra/cpra, patient blood, donor blood). If present it
-# is used; otherwise the values below are filled in.
+# Companion file with the same stem and extension .dat (PrefLib
+# 00036 ships one per instance), header:
+#   Pair,Patient,Donor,Wife-P?,%Pra,Out-Deg,Altruist
+# Real blood types, cPRA (%Pra as a fraction) and the altruist
+# flag are read from it. Only if it is missing are the values
+# below filled in.
 #
 # Taken from the file:  vertices, altruists, COMPATIBILITY EDGES
 #   (they replace module 3's ABO + crossmatch test)
@@ -122,8 +124,12 @@ def load_wmd(path: str) -> PrefLibGraph:
         n = max((max(e) for e in edges), default=0)
     altruists = {i for i, nm in names.items()
                  if re.search(r"altruist|ndd|non.?directed", nm, re.I)}
-    g = PrefLibGraph(Path(path).name, n, names, edges, altruists)
-    g.attributes = _load_companion(Path(path))
+    attributes = _load_companion(Path(path))
+    altruists |= {v for v, a in attributes.items() if a.get("altruist")}
+    for v in attributes:
+        names.setdefault(v, f"Pair {v}")
+    g = PrefLibGraph(Path(path).name, max(n, len(names)), names, edges, altruists)
+    g.attributes = attributes
     return g
 
 
@@ -148,6 +154,7 @@ def _load_companion(path: Path) -> Dict[int, Dict]:
         c_pra = col("cpra", "pra")
         c_pb = col("patient")
         c_db = col("donor")
+        c_alt = col("altruist", "ndd")
         out = {}
         for r in rows[1:]:
             try:
@@ -164,6 +171,8 @@ def _load_companion(path: Path) -> Dict[int, Dict]:
             for key, c in (("patient_blood", c_pb), ("donor_blood", c_db)):
                 if c is not None and c < len(r) and r[c].strip().upper() in ("O", "A", "B", "AB"):
                     a[key] = r[c].strip().upper()
+            if c_alt is not None and c_alt < len(r):
+                a["altruist"] = r[c_alt].strip() in ("1", "true", "True", "yes")
             out[vid] = a
         return out
     return {}
@@ -283,10 +292,16 @@ def run_preflib_ood(
         graph = load_wmd(str(f))
         builder = make_graph_builder(graph)
         verts = graph.vertices
-        init = min(initial_size, len(verts))
+        init, lam, n_star = initial_size, lambda_arrivals, BATCH_THRESHOLD
         if len(verts) < initial_size + n_rounds * lambda_arrivals:
-            print(f"[OOD] note: {f.name} has {len(verts)} vertices; arrivals "
-                  f"stop when the file is exhausted.")
+            # small instance: half the vertices start in the pool, the
+            # rest arrive spread over the rounds (same dynamics, scaled)
+            init = max(2, len(verts) // 2)
+            lam = max(0.5, (len(verts) - init) / n_rounds)
+            # batched threshold scaled like the pool: n* = 90/75 x initial pool
+            n_star = max(3, int(round(BATCH_THRESHOLD / initial_size * init)))
+            print(f"[OOD] {f.name}: {len(verts)} vertices -> initial pool {init}, "
+                  f"lambda {lam:.2f}/round, n* {n_star} (scaled to the instance)")
         for tau in taus:
             for run in range(n_runs):
                 seed = 1000 + run
@@ -303,18 +318,20 @@ def run_preflib_ood(
                     def factory(pool, next_id, tau, queue=queue, seed=seed):
                         return PrefLibPoolEvolution(
                             pool, next_id, tau_months=tau,
-                            lambda_arrivals=lambda_arrivals, seed=seed,
+                            lambda_arrivals=lam, seed=seed,
                             queue=queue)
 
                     traj = simulate_trajectory(
                         cfg, tau, seed, n_rounds=n_rounds, n_gen=n_gen,
                         selection_rule=selection_rule,
                         min_f1_ratio=min_f1_ratio,
+                        batch_threshold=n_star,
                         graph_builder=builder,
                         initial_pool=(pool, max(verts) + 1),
                         evolution_factory=factory, verbose=verbose)
                     for r in traj:
                         r["dataset"] = f.name
+                        r["n_vertices"] = len(verts)
                         r["run"] = run
                     rows.extend(traj)
                     print(f"[OOD] {f.name} {cfg['name']} tau={tau} run={run} done",
