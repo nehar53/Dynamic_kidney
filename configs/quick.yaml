@@ -1,0 +1,14 @@
+# Fast smoke-test configuration: same pipeline, tiny budget (minutes, not hours).
+experiment:
+  name: quick
+  runs: 3
+  taus: [6, 12]
+  n_jobs: 4
+dynamics:
+  rounds: 8
+moea:
+  pop_size: 24
+  generations: 15
+  hv_samples: 2000
+structures:
+  max_chains: 5000

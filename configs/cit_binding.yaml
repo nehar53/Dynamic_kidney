@@ -1,0 +1,9 @@
+# Sensitivity scenario in which the CIT constraint actually removes edges
+# (default transport times never exceed 24h - 6h).  Adds a 6h scheduling delay
+# to every inter-centre leg so Perth<->Auckland and Adelaide<->Auckland fail.
+experiment:
+  name: cit_binding
+  runs: 20
+  taus: [12]
+logistics:
+  inter_centre_delay_hours: 6.0

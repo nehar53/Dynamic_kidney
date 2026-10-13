@@ -1,0 +1,14 @@
+# Scalability analysis (Table 2: n = 200, 500, 1000). Run once per size by
+# editing pool.initial_pool_size / pool.arrival_rate, or copy this file.
+experiment:
+  name: scalability_n200
+  runs: 10
+  taus: [12]
+  baselines: [dyn_nsga3_ucb1_myopic, dyn_nsga3_linucb_myopic, myopic_ilp]
+pool:
+  initial_pool_size: 200
+  arrival_rate: 20
+clearing:
+  batch_threshold: 240
+dynamics:
+  rounds: 20

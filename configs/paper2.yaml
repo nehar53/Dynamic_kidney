@@ -1,0 +1,14 @@
+# Full Paper-2 design (concept note Sections 4.1-4.4).
+# 8 baselines x 3 tau x 100 runs x 25 rounds — expect many CPU-hours; use --jobs.
+experiment:
+  name: paper2
+  seed: 12345
+  runs: 100
+  taus: [6, 12, 18]
+  n_jobs: 8
+dynamics:
+  rounds: 25
+moea:
+  pop_size: 100
+  generations: 150
+  ref_divisions: 12
