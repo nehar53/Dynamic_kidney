@@ -4,156 +4,131 @@ from typing import Dict, List, Optional, Set, Tuple
 import numpy as np
 
 from module1_generator import Patient
-from module3_logistics import build_compatibility_graph
-from module5_nsga3_aos import MAX_CYCLE_LEN
+from module3_logistics import (
+    MAX_CHAIN_LEN, MAX_CYCLE_LEN, ExchangeStructures,
+    build_compatibility_graph, build_exchange_structures, enumerate_cycles,
+)
 
 # ============================================================
-# MODULE 6: ILP UPPER BOUND (CYCLE FORMULATION, CBC)
-# F1_ILP(t) = maximum number of transplants in round t
-# Used as the volume ceiling in the Price of Fairness:
-#   PoF_t = (F1_ILP(t) - F1_MOEA(t)) / F1_ILP(t) x 100%
+# MODULE 6: ILP BASELINES (CBC)
+#   Baseline 7: Myopic ILP  - maximum transplants, F1_ILP(t)
+#   Baseline 8: Dickerson lexicographic fairness (Dickerson 2014)
+# Concept note Sections 3.6 and 4.4
 # Paper 2 — Dynamic KEP Implementation
 # ============================================================
 #
-# Identical feasibility (concept note Section 3.6):
-# The ILP uses exactly the same compatibility graph (module 3)
-# and the same structures as module 5's repair_to_cycles:
-# disjoint cycles of length 2..MAX_CYCLE_LEN. So the ILP optimum
-# is a true ceiling for every MOEA solution in the same round.
+# Identical feasibility (Section 3.6): both ILPs optimise over
+# EXACTLY the exchange structures of module 3 (2-/3-cycles and
+# altruistic chains up to 4) that module 5's NSGA-III repairs to.
+# So F1_ILP(t) is a true ceiling for every MOEA solution and
+# PoF_t = (F1_ILP - F1_MOEA) / F1_ILP measures only the cost of
+# fairness.
 #
-# Solver: CBC through PuLP (bundled with pulp 2.x).
-# PuLP >= 3 no longer ships CBC; if CBC is missing we fall back
-# to SciPy's HiGHS MILP solver, which gives the same optimum.
+# Set-packing (cycle-and-chain) formulation:
+#   max  sum_s |recipients(s)| x_s
+#   s.t. sum_{s ∋ v} x_s <= 1      for every pair / altruist v
+#        x_s in {0, 1}
+#
+# Exact chain check (optional, for the paper): module 3 caps the
+# number of chains (MAX_CHAINS). solve_ilp_picef() solves the
+# position-indexed chain formulation (PICEF, Dickerson et al. 2016)
+# with ALL chains up to length L, to show how many transplants
+# the cap costs (normally 0).
+#
+# Solver: CBC via PuLP 2.x (bundled). PuLP >= 3 no longer ships
+# CBC; then SciPy's HiGHS is used, which gives the same optimum.
 
-ILP_TIME_LIMIT = 120     # seconds per solve
-CPRA_THRESHOLD = 0.80
-
-
-# ============================================================
-# CYCLE ENUMERATION
-# ============================================================
-
-def enumerate_cycles(
-    edges: Dict[Tuple[int, int], float],
-    pair_ids: List[int],
-    max_len: int = MAX_CYCLE_LEN
-) -> List[Tuple[int, ...]]:
-    """
-    Enumerate every simple cycle of length 2..max_len.
-
-    Each cycle is listed once, starting from its smallest
-    pair ID. A cycle (a, b, c) means: donor a -> patient b,
-    donor b -> patient c, donor c -> patient a.
-    """
-    adj: Dict[int, List[int]] = {i: [] for i in pair_ids}
-    for (i, j) in edges.keys():
-        if i in adj and j in adj:
-            adj[i].append(j)
-
-    cycles: List[Tuple[int, ...]] = []
-    for start in sorted(pair_ids):
-        stack = [(start, (start,))]
-        while stack:
-            node, path = stack.pop()
-            for nxt in adj[node]:
-                if nxt == start and len(path) >= 2:
-                    cycles.append(path)
-                elif (nxt > start and nxt not in path
-                      and len(path) < max_len):
-                    stack.append((nxt, path + (nxt,)))
-    return cycles
-
-
-def cycle_weight(cycle: Tuple[int, ...],
-                 edges: Dict[Tuple[int, int], float]) -> float:
-    """Sum of omega_HLA along the cycle (used as tie-break)."""
-    return sum(
-        edges[(cycle[k], cycle[(k + 1) % len(cycle)])]
-        for k in range(len(cycle))
-    )
+ILP_TIME_LIMIT = 120       # seconds per solve
 
 
 # ============================================================
 # GENERIC SET-PACKING SOLVER
 # ============================================================
 
-def _solve_packing(
-    cycles: List[Tuple[int, ...]],
-    values: np.ndarray,
-    extra_ge: Optional[Tuple[np.ndarray, float]] = None,
-    time_limit: int = ILP_TIME_LIMIT,
-    msg: bool = False
-) -> Tuple[List[int], str]:
-    """
-    max  sum_c values[c] * x_c
-    s.t. each pair appears in at most one chosen cycle
-         (optional) sum_c a[c] * x_c >= rhs
-         x_c in {0, 1}
-
-    Returns (indices of chosen cycles, solver name).
-    """
-    if len(cycles) == 0:
-        return [], "none"
-
+def _cbc_solver(time_limit: int, msg: bool = False):
     try:
         import pulp
         solver = pulp.PULP_CBC_CMD(msg=msg, timeLimit=time_limit)
-        if not solver.available():
-            raise ImportError
+        return solver if solver.available() else None
     except (ImportError, AttributeError):
-        return _solve_packing_highs(cycles, values, extra_ge,
-                                    time_limit), "highs"
+        return None
 
-    prob = pulp.LpProblem("KEP_cycle_formulation", pulp.LpMaximize)
-    x = [pulp.LpVariable(f"x_{c}", cat="Binary")
-         for c in range(len(cycles))]
-    prob += pulp.lpSum(float(values[c]) * x[c]
-                       for c in range(len(cycles)))
 
-    # Each pair in at most one cycle
-    by_pair: Dict[int, List[int]] = {}
-    for c, cyc in enumerate(cycles):
-        for p in cyc:
-            by_pair.setdefault(p, []).append(c)
-    for p, cs in by_pair.items():
-        if len(cs) > 1:
-            prob += pulp.lpSum(x[c] for c in cs) <= 1, f"pair_{p}"
+def _solve_packing(
+    nodes: List[Tuple[int, ...]],
+    values: np.ndarray,
+    extra_ge: Optional[Tuple[np.ndarray, float]] = None,
+    time_limit: int = ILP_TIME_LIMIT,
+) -> Tuple[List[int], str]:
+    """
+    max  sum_k values[k] x_k
+    s.t. every node in at most one chosen structure
+         (optional) sum_k a[k] x_k >= rhs
+    Returns (chosen structure indices, solver name).
+    """
+    if len(nodes) == 0:
+        return [], "none"
+    solver = _cbc_solver(time_limit)
+    if solver is None:
+        return _solve_packing_highs(nodes, values, extra_ge, time_limit), "highs"
 
+    import pulp
+    prob = pulp.LpProblem("KEP_set_packing", pulp.LpMaximize)
+    x = [pulp.LpVariable(f"x_{k}", cat="Binary") for k in range(len(nodes))]
+    prob += pulp.lpSum(float(values[k]) * x[k] for k in range(len(nodes)))
+    by_node: Dict[int, List[int]] = {}
+    for k, s in enumerate(nodes):
+        for v in s:
+            by_node.setdefault(v, []).append(k)
+    for v, ks in by_node.items():
+        if len(ks) > 1:
+            prob += pulp.lpSum(x[k] for k in ks) <= 1, f"node_{v}"
     if extra_ge is not None:
         a, rhs = extra_ge
-        prob += pulp.lpSum(float(a[c]) * x[c]
-                           for c in range(len(cycles))) >= rhs
-
+        prob += pulp.lpSum(float(a[k]) * x[k] for k in range(len(nodes))) >= rhs
     prob.solve(solver)
-    chosen = [c for c in range(len(cycles))
-              if x[c].value() is not None and x[c].value() > 0.5]
-    return chosen, "cbc"
+    return [k for k in range(len(nodes))
+            if x[k].value() is not None and x[k].value() > 0.5], "cbc"
 
 
-def _solve_packing_highs(cycles, values, extra_ge, time_limit):
-    """Same model solved with SciPy HiGHS (fallback)."""
+def _solve_packing_highs(nodes, values, extra_ge, time_limit):
     from scipy.optimize import Bounds, LinearConstraint, milp
     from scipy.sparse import csr_matrix
 
-    ids = sorted({p for cyc in cycles for p in cyc})
-    row = {p: k for k, p in enumerate(ids)}
+    ids = sorted({v for s in nodes for v in s})
+    row = {v: r for r, v in enumerate(ids)}
     r, c = [], []
-    for k, cyc in enumerate(cycles):
-        for p in cyc:
-            r.append(row[p])
+    for k, s in enumerate(nodes):
+        for v in s:
+            r.append(row[v])
             c.append(k)
-    A = csr_matrix((np.ones(len(r)), (r, c)),
-                   shape=(len(ids), len(cycles)))
+    A = csr_matrix((np.ones(len(r)), (r, c)), shape=(len(ids), len(nodes)))
     cons = [LinearConstraint(A, -np.inf, 1.0)]
     if extra_ge is not None:
         a, rhs = extra_ge
-        cons.append(LinearConstraint(a[None, :], rhs, np.inf))
+        cons.append(LinearConstraint(np.asarray(a, float)[None, :], rhs, np.inf))
     res = milp(c=-np.asarray(values, float), constraints=cons,
-               integrality=np.ones(len(cycles)), bounds=Bounds(0, 1),
+               integrality=np.ones(len(nodes)), bounds=Bounds(0, 1),
                options={"time_limit": time_limit})
     if res.x is None:
         raise RuntimeError(f"HiGHS failed: {res.message}")
-    return [k for k in range(len(cycles)) if res.x[k] > 0.5]
+    return [k for k in range(len(nodes)) if res.x[k] > 0.5]
+
+
+def _structures(pool_pairs, edges, structures):
+    if edges is None:
+        edges = build_compatibility_graph(pool_pairs)
+    if structures is None:
+        structures = build_exchange_structures(pool_pairs, edges)
+    return edges, structures
+
+
+def _result(structures: ExchangeStructures, chosen: List[int]):
+    matched: Set[int] = set()
+    for k in chosen:
+        matched.update(structures.nodes[k])     # includes altruists used
+    f1 = float(sum(structures.size(k) for k in chosen))
+    return matched, f1
 
 
 # ============================================================
@@ -163,46 +138,46 @@ def _solve_packing_highs(cycles, values, extra_ge, time_limit):
 def solve_ilp_max_transplants(
     pool_pairs: List[Patient],
     edges: Optional[Dict] = None,
-    max_len: int = MAX_CYCLE_LEN,
+    structures: Optional[ExchangeStructures] = None,
     hla_tiebreak: bool = True,
-    time_limit: int = ILP_TIME_LIMIT
+    time_limit: int = ILP_TIME_LIMIT,
+    max_len: int = MAX_CYCLE_LEN,
 ) -> Tuple[Set[int], float, Dict]:
     """
-    Solve the maximum-transplant ILP for the current pool.
+    Maximum-transplant ILP for the current pool.
 
-    Returns:
-        matched_ids: set of pair IDs in the optimal cycles
-        f1_ilp:      number of transplants (= F1_ILP(t))
-        info:        solver statistics
+    Returns
+      matched_ids  pair IDs in the chosen structures (incl. altruists)
+      f1_ilp       transplants = F1_ILP(t)
+      info         'structure_indices' (pass to module 5 as
+                   guide_structures), counts, solver, time
     """
     t0 = time.time()
-    if edges is None:
-        edges = build_compatibility_graph(pool_pairs)
-    pair_ids = [p.pair_id for p in pool_pairs]
-    cycles = enumerate_cycles(edges, pair_ids, max_len)
-
-    sizes = np.array([len(c) for c in cycles], dtype=float)
+    edges, structures = _structures(pool_pairs, edges, structures)
+    sizes = np.array([structures.size(k) for k in range(len(structures))], float)
     values = sizes.copy()
-    if hla_tiebreak and len(cycles):
-        # Tiny HLA bonus breaks ties between equally large
-        # solutions without ever trading away a transplant.
-        hla = np.array([cycle_weight(c, edges) for c in cycles])
-        values = values + 1e-3 * hla / max(1.0, hla.sum())
-
-    chosen, solver = _solve_packing(cycles, values,
-                                    time_limit=time_limit)
-    matched: Set[int] = set()
-    for k in chosen:
-        matched.update(cycles[k])
-
+    if hla_tiebreak and len(structures):
+        # tiny HLA bonus breaks ties without trading away a transplant
+        w = np.asarray(structures.weight, float)
+        values = values + 1e-3 * w / max(1.0, w.sum())
+    chosen, solver = _solve_packing(structures.nodes, values, time_limit=time_limit)
+    matched, f1 = _result(structures, chosen)
     info = {
-        "n_cycles": len(cycles),
+        "structure_indices": chosen,
+        "cycles_chosen": [structures.nodes[k] for k in chosen
+                          if structures.kind[k] == "cycle"],
+        "chains_chosen": [structures.nodes[k] for k in chosen
+                          if structures.kind[k] == "chain"],
+        "n_cycles": structures.n_cycles(),
+        "n_chains": structures.n_chains(),
+        "chains_truncated": structures.truncated,
         "n_edges": len(edges),
         "solver": solver,
         "seconds": time.time() - t0,
-        "cycles_chosen": [cycles[k] for k in chosen],
+        "structures": structures,
+        "edges": edges,
     }
-    return matched, float(len(matched)), info
+    return matched, f1, info
 
 
 # ============================================================
@@ -212,52 +187,107 @@ def solve_ilp_max_transplants(
 def solve_ilp_lexicographic(
     pool_pairs: List[Patient],
     edges: Optional[Dict] = None,
+    structures: Optional[ExchangeStructures] = None,
+    time_limit: int = ILP_TIME_LIMIT,
     max_len: int = MAX_CYCLE_LEN,
-    time_limit: int = ILP_TIME_LIMIT
 ) -> Tuple[Set[int], float, Dict]:
     """
-    Lexicographic fairness baseline (Dickerson et al. 2014):
-      Stage 1: maximise number of high-cPRA patients matched.
-      Stage 2: maximise total transplants, keeping stage-1 value.
+    Dickerson et al. (2014) lexicographic fairness:
+      stage 1: maximise high-cPRA patients transplanted
+      stage 2: maximise total transplants, keeping stage 1 optimal
     """
     t0 = time.time()
-    if edges is None:
-        edges = build_compatibility_graph(pool_pairs)
-    pair_ids = [p.pair_id for p in pool_pairs]
+    edges, structures = _structures(pool_pairs, edges, structures)
     high = {p.pair_id for p in pool_pairs
             if p.is_highly_sensitised and not p.is_altruistic}
-    cycles = enumerate_cycles(edges, pair_ids, max_len)
+    n_high = np.array([sum(v in high for v in structures.recipients[k])
+                       for k in range(len(structures))], float)
+    sizes = np.array([structures.size(k) for k in range(len(structures))], float)
 
-    n_high = np.array([sum(1 for p in c if p in high)
-                       for c in cycles], dtype=float)
-    sizes = np.array([len(c) for c in cycles], dtype=float)
-
-    stage1, solver = _solve_packing(cycles, n_high,
-                                    time_limit=time_limit)
+    stage1, solver = _solve_packing(structures.nodes, n_high, time_limit=time_limit)
     best_high = float(n_high[stage1].sum()) if stage1 else 0.0
-    stage2, _ = _solve_packing(cycles, sizes,
+    stage2, _ = _solve_packing(structures.nodes, sizes,
                                extra_ge=(n_high, best_high - 1e-6),
                                time_limit=time_limit)
-
-    matched: Set[int] = set()
-    for k in stage2:
-        matched.update(cycles[k])
-    info = {
-        "n_cycles": len(cycles),
+    matched, f1 = _result(structures, stage2)
+    return matched, f1, {
+        "structure_indices": stage2,
         "high_cpra_matched": int(best_high),
         "solver": solver,
         "seconds": time.time() - t0,
     }
-    return matched, float(len(matched)), info
 
 
-def verify_disjoint(cycles: List[Tuple[int, ...]]) -> bool:
-    """Check no pair appears in two chosen cycles."""
+# ============================================================
+# EXACT CHAIN CHECK: PICEF (all chains up to L, no cap)
+# ============================================================
+
+def solve_ilp_picef(
+    pool_pairs: List[Patient],
+    edges: Optional[Dict] = None,
+    max_cycle_len: int = MAX_CYCLE_LEN,
+    max_chain_len: int = MAX_CHAIN_LEN,
+    time_limit: int = ILP_TIME_LIMIT,
+) -> Tuple[float, Dict]:
+    """
+    Position-Indexed Chain-Edge Formulation (Dickerson et al. 2016):
+    cycles enumerated explicitly, chains modelled by arc-position
+    variables y[i,j,k] (arc i->j used at position k of a chain).
+    Gives the TRUE optimum with all chains up to max_chain_len.
+    Used only to verify that module 3's chain cap loses nothing.
+    """
+    import pulp
+    if edges is None:
+        edges = build_compatibility_graph(pool_pairs)
+    t0 = time.time()
+    alts = {p.pair_id for p in pool_pairs if p.is_altruistic}
+    pts = [p.pair_id for p in pool_pairs if not p.is_altruistic]
+    cycles = enumerate_cycles(edges, [p.pair_id for p in pool_pairs], max_cycle_len)
+
+    prob = pulp.LpProblem("PICEF", pulp.LpMaximize)
+    x = {k: pulp.LpVariable(f"c_{k}", cat="Binary") for k in range(len(cycles))}
+    y = {}
+    for (i, j) in edges:
+        positions = [1] if i in alts else range(2, max_chain_len + 1)
+        for k in positions:
+            y[(i, j, k)] = pulp.LpVariable(f"y_{i}_{j}_{k}", cat="Binary")
+    prob += (pulp.lpSum(len(cycles[k]) * x[k] for k in x) + pulp.lpSum(y.values()))
+
+    into: Dict[Tuple[int, int], list] = {}
+    out_of: Dict[Tuple[int, int], list] = {}
+    for (i, j, k), var in y.items():
+        into.setdefault((j, k), []).append(var)
+        out_of.setdefault((i, k), []).append(var)
+    in_cycle: Dict[int, list] = {}
+    for k, c in enumerate(cycles):
+        for v in c:
+            in_cycle.setdefault(v, []).append(x[k])
+
+    for v in pts:       # each patient receives at most one kidney
+        prob += (pulp.lpSum(in_cycle.get(v, [])) +
+                 pulp.lpSum(var for k in range(1, max_chain_len + 1)
+                            for var in into.get((v, k), []))) <= 1
+    for a in alts:      # each altruist starts at most one chain
+        prob += pulp.lpSum(out_of.get((a, 1), [])) <= 1
+    for v in pts:       # chain continues only if v received at position k
+        for k in range(1, max_chain_len):
+            prob += (pulp.lpSum(out_of.get((v, k + 1), [])) <=
+                     pulp.lpSum(into.get((v, k), [])))
+
+    solver = _cbc_solver(time_limit) or pulp.PULP_CBC_CMD(msg=False)
+    prob.solve(solver)
+    f1 = float(pulp.value(prob.objective) or 0.0)
+    return round(f1), {"n_cycles": len(cycles), "n_arc_vars": len(y),
+                       "seconds": time.time() - t0}
+
+
+def verify_disjoint(structs: List[Tuple[int, ...]]) -> bool:
+    """No pair or altruist appears in two chosen structures."""
     seen: Set[int] = set()
-    for c in cycles:
-        if seen & set(c):
+    for s in structs:
+        if seen & set(s):
             return False
-        seen.update(c)
+        seen.update(s)
     return True
 
 
@@ -268,51 +298,69 @@ def verify_disjoint(cycles: List[Tuple[int, ...]]) -> bool:
 if __name__ == "__main__":
 
     from module1_generator import generate_initial_pool
-    from module4_objectives import compute_pof
-    from module5_nsga3_aos import (
-        UCB1AOS, extract_best_solution, run_nsga3_with_aos
-    )
+    from module4_objectives import compute_pof, round_metrics
+    from module5_nsga3_aos import UCB1AOS, run_moea_round
 
-    print("=" * 55)
-    print("MODULE 6: ILP UPPER BOUND (CBC)")
-    print(f"Cycle length <= {MAX_CYCLE_LEN} (same as module 5)")
-    print("=" * 55)
+    print("=" * 60)
+    print("MODULE 6: ILP BASELINES (CBC)")
+    print(f"Structures: cycles <= {MAX_CYCLE_LEN}, chains <= {MAX_CHAIN_LEN} "
+          f"(same list as module 5)")
+    print("=" * 60)
 
-    pool, next_id = generate_initial_pool(n_pairs=75, seed=42)
-    edges = build_compatibility_graph(pool.pairs)
+    pool, _ = generate_initial_pool(n_pairs=75, seed=42, initial_wait_max=12)
+    pairs = pool.pairs
+    edges = build_compatibility_graph(pairs)
+    st = build_exchange_structures(pairs, edges)
+    print(f"\nPool: {len(pool.patients())} pairs + {len(pool.altruists())} altruists, "
+          f"{len(edges)} edges, {st.n_cycles()} cycles, {st.n_chains()} chains "
+          f"(truncated={st.truncated})")
 
-    matched, f1_ilp, info = solve_ilp_max_transplants(
-        pool.pairs, edges
-    )
-    print(f"\nPool size:        {pool.size()}")
-    print(f"Feasible edges:   {info['n_edges']}")
-    print(f"Cycles (2..{MAX_CYCLE_LEN}):    {info['n_cycles']}")
-    print(f"Solver:           {info['solver']}")
-    print(f"F1_ILP:           {f1_ilp:.0f} transplants")
-    print(f"Solve time:       {info['seconds']:.2f} s")
-    print(f"Cycles disjoint:  "
-          f"{verify_disjoint(info['cycles_chosen'])}")
+    # --- Baseline 7 ---
+    m_ilp, f1_ilp, info = solve_ilp_max_transplants(pairs, edges, st)
+    print("\n--- Baseline 7: Myopic ILP (max transplants) ---")
+    print(f"  Solver:            {info['solver']}  ({info['seconds']:.2f} s)")
+    print(f"  F1_ILP:            {f1_ilp:.0f} transplants")
+    print(f"  Cycles chosen:     {len(info['cycles_chosen'])}  "
+          f"Chains chosen: {len(info['chains_chosen'])}")
+    print(f"  Disjoint:          "
+          f"{verify_disjoint(info['cycles_chosen'] + info['chains_chosen'])}")
+    rm = round_metrics(m_ilp, pairs)
+    print(f"  High-cPRA match rate: {rm['match_rate_high_cpra'] * 100:.1f}%  "
+          f"low-cPRA: {rm['match_rate_low_cpra'] * 100:.1f}%")
 
-    lex_matched, f1_lex, lex_info = solve_ilp_lexicographic(
-        pool.pairs, edges
-    )
-    print(f"\n--- Dickerson Lexicographic ---")
-    print(f"High-cPRA matched: {lex_info['high_cpra_matched']}")
-    print(f"F1_LEX:            {f1_lex:.0f} transplants")
-    print(f"PoF (lexicographic vs ILP): "
-          f"{compute_pof(f1_ilp, f1_lex):.2f}%")
+    # --- Cycles only (old module 6) for comparison ---
+    cyc = [k for k in range(len(st)) if st.kind[k] == "cycle"]
+    sizes = np.array([st.size(k) for k in cyc], float)
+    ch, _ = _solve_packing([st.nodes[k] for k in cyc], sizes)
+    print(f"  (cycles only, no chains: {sizes[ch].sum():.0f} transplants)")
 
-    print(f"\n--- MOEA vs ILP on the same pool ---")
-    result, hv, arm, rate = run_nsga3_with_aos(
-        pool.pairs, 'ucb1', ucb1_aos=UCB1AOS(), n_gen=30, seed=1
-    )
-    moea = extract_best_solution(result, pool.pairs, edges)
-    print(f"F1_MOEA (max-F1 point): {len(moea)}")
-    print(f"PoF:                    "
-          f"{compute_pof(f1_ilp, len(moea)):.2f}%")
-    assert len(moea) <= f1_ilp, "MOEA exceeded ILP ceiling!"
+    # --- Exact chain check ---
+    f1_exact, pinfo = solve_ilp_picef(pairs, edges)
+    print("\n--- Exact check: PICEF with ALL chains up to L ---")
+    print(f"  F1 exact:          {f1_exact:.0f}  ({pinfo['seconds']:.2f} s)")
+    print(f"  Chain cap costs:   {f1_exact - f1_ilp:.0f} transplant(s)")
 
-    print("\n" + "=" * 55)
+    # --- Baseline 8 ---
+    m_lex, f1_lex, linfo = solve_ilp_lexicographic(pairs, edges, st)
+    rml = round_metrics(m_lex, pairs)
+    print("\n--- Baseline 8: Dickerson lexicographic ---")
+    print(f"  High-cPRA matched: {linfo['high_cpra_matched']}  "
+          f"(ILP: {sum(1 for p in pool.get_highly_sensitised() if p.pair_id in m_ilp)})")
+    print(f"  F1_LEX:            {f1_lex:.0f} transplants")
+    print(f"  High-cPRA match rate: {rml['match_rate_high_cpra'] * 100:.1f}%")
+    print(f"  PoF (lexicographic vs ILP): {compute_pof(f1_ilp, f1_lex):.2f}%")
+
+    # --- MOEA on identical structures ---
+    print("\n--- NSGA-III (ILP-guided) on the same structures ---")
+    res = run_moea_round(pairs, UCB1AOS(seed=1), None, "nsga3", n_gen=40,
+                         seed=1, edges=edges, structures=st,
+                         guide_structures=info["structure_indices"])
+    f1s = -res.F[:, 0]
+    print(f"  Front: {len(f1s)} solutions, F1 {f1s.min():.0f}..{f1s.max():.0f}")
+    print(f"  Max F1 on front == F1_ILP: {f1s.max() == f1_ilp}")
+    print(f"  No MOEA solution above the ILP ceiling: {bool((f1s <= f1_ilp).all())}")
+
+    print("\n" + "=" * 60)
     print("MODULE 6 COMPLETE")
     print("Ready for Module 7: Clearing Strategies")
-    print("=" * 55)
+    print("=" * 60)

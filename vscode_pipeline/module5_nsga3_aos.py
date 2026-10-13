@@ -389,12 +389,43 @@ def compute_hypervolume(F: np.ndarray, n_pairs: int) -> float:
 
 
 # ============================================================
+# EXTERNAL ARCHIVE OF NON-DOMINATED SOLUTIONS
+# ============================================================
+#
+# NSGA-III keeps only N solutions; when the non-dominated front is
+# larger than N, niching can drop extreme points such as the
+# maximum-F1 matching. The archive keeps EVERY non-dominated
+# solution found during the round, so the final front never loses
+# a solution once found (standard elitist archive).
+
+class ParetoArchive:
+    def __init__(self):
+        self.X = None
+        self.F = None
+
+    def update(self, X: np.ndarray, F: np.ndarray) -> None:
+        X = np.atleast_2d(np.asarray(X, dtype=bool))
+        F = np.atleast_2d(np.asarray(F, dtype=float))
+        if self.X is not None:
+            X = np.vstack([self.X, X])
+            F = np.vstack([self.F, F])
+        # unique solutions
+        _, idx = np.unique(X, axis=0, return_index=True)
+        X, F = X[np.sort(idx)], F[np.sort(idx)]
+        # non-dominated filter
+        le = (F[:, None, :] <= F[None, :, :]).all(-1)
+        lt = (F[:, None, :] < F[None, :, :]).any(-1)
+        dominated = (le & lt).any(0)
+        self.X, self.F = X[~dominated], F[~dominated]
+
+
+# ============================================================
 # RESULT OF ONE CLEARING ROUND
 # ============================================================
 
 @dataclass
 class MOEAResult:
-    X: np.ndarray                 # final non-dominated solutions (bool, repaired)
+    X: np.ndarray                 # archive of non-dominated solutions (bool, repaired)
     F: np.ndarray                 # same front as (-F1, F2, F3, F4) raw values
     F_norm: np.ndarray            # normalised minimisation vectors
     matched_sets: List[Set[int]]  # matched pair IDs per front solution
@@ -484,6 +515,8 @@ def run_moea_round(
     algo.setup(problem, termination=("n_gen", n_gen + 1), seed=seed, verbose=False)
 
     algo.next()                                    # generation 0: initial population
+    archive = ParetoArchive()
+    archive.update(algo.opt.get("X"), algo.opt.get("F"))
     hv_prev = compute_hypervolume_norm(algo.opt.get("F"))
     hv_trace, arm_trace, reward_trace = [hv_prev], [], []
     best_gain = 1e-12
@@ -492,6 +525,7 @@ def run_moea_round(
         arm, rate = aos.get_mutation_rate(context)
         mutation.rate = rate
         algo.next()
+        archive.update(algo.opt.get("X"), algo.opt.get("F"))
         hv_now = compute_hypervolume_norm(algo.opt.get("F"))
         gain = max(0.0, hv_now - hv_prev)
         best_gain = max(best_gain, gain)
@@ -502,8 +536,7 @@ def run_moea_round(
         arm_trace.append(arm)
         reward_trace.append(reward)
 
-    X = np.atleast_2d(algo.opt.get("X")).astype(bool)
-    F_norm = np.atleast_2d(algo.opt.get("F"))
+    X, F_norm = archive.X, archive.F            # final front = archive
     matched_sets = [problem.repairer.matched_ids(x) for x in X]
     raw = np.array([problem.evaluator.evaluate(m) for m in matched_sets])
     F_old = raw.copy()
