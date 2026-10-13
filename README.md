@@ -51,6 +51,7 @@ selection inside NSGA-III.
 ```bash
 pip install -e .            # or: pip install -r requirements.txt
 python -m pytest            # 24 tests, ~15 s
+# Step-by-step research workflow: see RUNNING.md
 
 # Stage by stage (each stage reads the previous stage's files)
 python -m dkex.cli calibrate --config configs/quick.yaml   # check pool vs Table 2, print warnings
