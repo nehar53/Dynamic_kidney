@@ -1,328 +1,321 @@
+import warnings
+from typing import Dict, Iterable, List, Optional, Set
+
 import numpy as np
-from typing import List, Dict, Tuple, Set
-from module1_generator import Patient, ANZKX_NODES
-from module3_logistics import (
-    DISTANT_NODES,
-    CENTRAL_NODES,
-    classify_node
-)
+
+from module1_generator import CPRA_THRESHOLD, Patient
+from module3_logistics import CENTRAL_NODES, DISTANT_NODES, classify_node
 
 # ============================================================
-# MODULE 4: FOUR FAIRNESS OBJECTIVES
-# F1: Transplant Efficiency
-# F2: Waiting-Time Equity (Gini)
-# F3: Sensitised Patient Access (GFG)
-# F4: Node-Level Logistics Disparity
+# MODULE 4: FOUR FAIRNESS OBJECTIVES + PRICE OF FAIRNESS
+# Concept note Section 3.4 (Eqs. 5-9) and Section 3.6 (Eq. 13)
 # Paper 2 — Dynamic KEP Implementation
 # ============================================================
+#
+#   F1  Transplant efficiency      number of patients transplanted
+#   F2  Waiting-time equity        Gini of waiting times of ALL
+#                                  patients in V_t after the round:
+#                                  matched keep w_i, others w_i+1 (Eq. 7)
+#   F3  Sensitised patient access  | |M∩S|/|S| - |M|/|V_t| |   (Eq. 8)
+#   F4  Logistics disparity        | |M∩R|/|R| - |M∩U|/|U| |   (Eq. 9)
+#
+#   NSGA-III minimises  (-F1, F2, F3, F4)                      (Eq. 5)
+#
+# Conventions (state these in the paper):
+#   * All sets are PATIENTS. Altruistic donors have no patient, so
+#     they never count in F1, |S|, |V_t|, R, U or the Gini. An
+#     altruist used in a chain is "matched" as a donor only.
+#   * F2 ("post_round", default). A Gini of the current waiting
+#     times of the whole pool is the same for every solution and
+#     cannot be optimised. A Gini over only the patients LEFT
+#     waiting ("residual") has the wrong incentive: removing the
+#     longest waiters leaves a relatively more unequal pool, so it
+#     rewards matching SHORT waiters. "post_round" uses every
+#     patient in V_t, with the waiting time each will have after
+#     this round (matched: w_i, final; unmatched: w_i + 1). Serving
+#     long waiters then lowers F2, as waiting-time equity requires.
+#   * F3 sign. Eq. 5 writes -F3 (maximise) while Eq. 8 defines F3 as
+#     an absolute gap (minimise). Default F3_MODE = "gap" minimises
+#     Eq. 8. F3_MODE = "access" maximises |M∩S|/|S| instead.
+#   * The empty matching gives F3 = F4 = 0 (no gap if nobody is
+#     matched), so it is always Pareto-optimal. The solution
+#     selection rule (module 7) must ignore it when a non-empty
+#     solution exists.
+#
+# PoF_t = (F1_ILP(t) - F1_MOEA(t)) / F1_ILP(t) x 100%          (Eq. 13)
+#   undefined (NaN) when F1_ILP(t) = 0 (no transplant possible).
 
-# High cPRA threshold for sensitised patients
-CPRA_THRESHOLD = 0.80
+F3_MODE = "gap"            # "gap" (Eq. 8) or "access" (Eq. 5 sign)
+F2_MODE = "post_round"     # "post_round" (default) or "residual"
+ROUND_INCREMENT = 1        # months added to unmatched patients
+OBJECTIVE_NAMES = ("F1_transplants", "F2_wait_gini",
+                   "F3_cpra_gap", "F4_logistics_gap")
 
 
-def compute_f1_efficiency(
-    matched_pair_ids: Set[int],
-    pool_pairs: List[Patient]
-) -> float:
+# ============================================================
+# BASIC BUILDING BLOCKS
+# ============================================================
+
+def gini(values: Iterable[float]) -> float:
     """
-    F1: Transplant Efficiency
-    Total matched pairs per round.
-   
-    F1(x) = sum of |c| for all cycles c in C(x)
-   
-    Higher is better.
-    Minimisation: negate F1 in NSGA-III.
+    Gini coefficient (Eq. 7):
+        G = sum_i sum_j |w_i - w_j| / (2 n sum_i w_i)
+    Computed in O(n log n) with the sorted-values identity.
+    0 = perfect equality, -> 1 = maximal inequality.
     """
-    return float(len(matched_pair_ids))
-
-
-def compute_f2_gini(
-    pool_pairs: List[Patient]
-) -> float:
-    """
-    F2: Waiting-Time Equity
-    Gini coefficient across all waiting times.
-   
-    F2(x) = sum_i sum_j |w_i - w_j|
-            / (2n * sum_i w_i)
-   
-    Range: 0 (perfect equality) to 1 (maximum inequality).
-    Lower is better.
-    Minimise F2 directly.
-    """
-    n = len(pool_pairs)
-    if n == 0:
+    w = np.sort(np.asarray(list(values), dtype=float))
+    n = w.size
+    if n < 2 or w.sum() <= 0:
         return 0.0
+    k = np.arange(1, n + 1)
+    return float(np.sum((2 * k - n - 1) * w) / (n * w.sum()))
 
-    waiting_times = np.array([
-        p.waiting_time for p in pool_pairs
-    ], dtype=float)
 
-    total_waiting = np.sum(waiting_times)
-    if total_waiting == 0:
+def gini_pairwise(values: Iterable[float]) -> float:
+    """Direct double-sum Gini (Eq. 7), used only to verify gini()."""
+    w = np.asarray(list(values), dtype=float)
+    n = w.size
+    if n < 2 or w.sum() <= 0:
         return 0.0
-
-    # Compute sum of absolute differences
-    diff_sum = 0.0
-    for i in range(n):
-        for j in range(n):
-            diff_sum += abs(
-                waiting_times[i] - waiting_times[j]
-            )
-
-    gini = diff_sum / (2 * n * total_waiting)
-    return float(np.clip(gini, 0.0, 1.0))
+    return float(np.abs(w[:, None] - w[None, :]).sum() / (2 * n * w.sum()))
 
 
-def compute_f2_gini_fast(
-    pool_pairs: List[Patient]
-) -> float:
+def _patients(pool_pairs: List[Patient]) -> List[Patient]:
+    return [p for p in pool_pairs if not p.is_altruistic]
+
+
+# ============================================================
+# THE FOUR OBJECTIVES (readable versions)
+# ============================================================
+
+def compute_f1_efficiency(matched_pair_ids: Set[int],
+                          pool_pairs: List[Patient]) -> float:
+    """F1 (Eq. 6): number of PATIENTS transplanted this round."""
+    return float(sum(1 for p in _patients(pool_pairs)
+                     if p.pair_id in matched_pair_ids))
+
+
+def compute_f2_gini(pool_pairs: List[Patient],
+                    matched_pair_ids: Optional[Set[int]] = None,
+                    mode: str = F2_MODE) -> float:
     """
-    F2: Fast vectorised Gini computation.
-    Same result as compute_f2_gini but faster.
-    Used in actual NSGA-III runs.
+    F2 (Eq. 7), waiting-time equity of a solution.
+      "post_round": Gini over all patients, matched w_i,
+                    unmatched w_i + 1  (default, see header)
+      "residual":   Gini over unmatched patients only
+    With matched_pair_ids=None it is the Gini of the current
+    waiting times of all patients (a pool descriptor, e.g. for the
+    LinUCB context).
     """
-    n = len(pool_pairs)
-    if n == 0:
+    pts = _patients(pool_pairs)
+    if matched_pair_ids is None:
+        return gini([p.waiting_time for p in pts])
+    if mode == "residual":
+        return gini([p.waiting_time for p in pts
+                     if p.pair_id not in matched_pair_ids])
+    return gini([p.waiting_time if p.pair_id in matched_pair_ids
+                 else p.waiting_time + ROUND_INCREMENT for p in pts])
+
+
+# Kept for compatibility with earlier modules (same result)
+compute_f2_gini_fast = compute_f2_gini
+
+
+def compute_f3_group_fairness(matched_pair_ids: Set[int],
+                              pool_pairs: List[Patient],
+                              mode: str = F3_MODE) -> float:
+    """
+    F3 (Eq. 8) for high-cPRA patients S (cPRA >= 80%).
+      mode "gap":    | |M∩S|/|S| - |M|/|V_t| |   (minimise)
+      mode "access": |M∩S|/|S|                   (maximise)
+    """
+    pts = _patients(pool_pairs)
+    S = [p for p in pts if p.is_highly_sensitised]
+    if not pts or not S:
         return 0.0
+    rate_s = sum(p.pair_id in matched_pair_ids for p in S) / len(S)
+    if mode == "access":
+        return float(rate_s)
+    rate_all = sum(p.pair_id in matched_pair_ids for p in pts) / len(pts)
+    return float(abs(rate_s - rate_all))
 
-    waiting_times = np.array([
-        p.waiting_time for p in pool_pairs
-    ], dtype=float)
 
-    total_waiting = np.sum(waiting_times)
-    if total_waiting == 0:
+def compute_f4_logistics_disparity(matched_pair_ids: Set[int],
+                                   pool_pairs: List[Patient]) -> float:
+    """
+    F4 (Eq. 9): | |M∩R|/|R| - |M∩U|/|U| |
+    R = patients at distant nodes (Perth, Auckland),
+    U = patients at central nodes. Modelled logistics proxy only;
+    not a validated measure of geographic inequity.
+    """
+    pts = _patients(pool_pairs)
+    R = [p for p in pts if classify_node(p.hospital_node) == 'R']
+    U = [p for p in pts if classify_node(p.hospital_node) == 'U']
+    if not R or not U:
         return 0.0
-
-    # Vectorised absolute difference
-    w = waiting_times.reshape(-1, 1)
-    diff_sum = np.sum(np.abs(w - w.T))
-
-    gini = diff_sum / (2 * n * total_waiting)
-    return float(np.clip(gini, 0.0, 1.0))
+    rate_r = sum(p.pair_id in matched_pair_ids for p in R) / len(R)
+    rate_u = sum(p.pair_id in matched_pair_ids for p in U) / len(U)
+    return float(abs(rate_r - rate_u))
 
 
-def compute_f3_group_fairness(
-    matched_pair_ids: Set[int],
-    pool_pairs: List[Patient]
-) -> float:
+def compute_all_objectives(matched_pair_ids: Set[int],
+                           pool_pairs: List[Patient],
+                           mode: str = F3_MODE,
+                           f2_mode: str = F2_MODE) -> Dict[str, float]:
     """
-    F3: Sensitised Patient Access
-    Group Fairness Gap for high-cPRA patients.
-   
-    F3(x) = |matched_rate_sensitised
-              - matched_rate_overall|
-   
-    Where:
-    matched_rate_sensitised = |M ∩ S| / |S|
-    matched_rate_overall    = |M| / |V_t|
-   
-    S = high-cPRA patients (cPRA >= 80%)
-    M = matched pairs
-    V_t = all active pairs
-   
-    Range: 0 (perfect group fairness) to 1.
-    Lower is better.
-    Minimise F3 directly.
+    All four objectives for one solution (same keys as before).
+    For NSGA-III use ObjectiveEvaluator below (much faster).
     """
-    n_total = len(pool_pairs)
-    if n_total == 0:
-        return 0.0
-
-    # Get sensitised patients
-    sensitised = [
-        p for p in pool_pairs
-        if p.is_highly_sensitised
-    ]
-    n_sensitised = len(sensitised)
-
-    if n_sensitised == 0:
-        return 0.0
-
-    # Count matched sensitised
-    matched_sensitised = sum(
-        1 for p in sensitised
-        if p.pair_id in matched_pair_ids
-    )
-
-    # Matched rates
-    rate_sensitised = matched_sensitised / n_sensitised
-    rate_overall = len(matched_pair_ids) / n_total
-
-    gfg = abs(rate_sensitised - rate_overall)
-    return float(np.clip(gfg, 0.0, 1.0))
-
-
-def compute_f4_logistics_disparity(
-    matched_pair_ids: Set[int],
-    pool_pairs: List[Patient]
-) -> float:
-    """
-    F4: Node-Level Logistics Disparity
-    Modelled disparity in match rates between
-    geographically distant and central nodes.
-   
-    F4(x) = ||M ∩ R| / |R| - |M ∩ U| / |U||
-   
-    R = geographically distant nodes
-        (Perth, Auckland)
-    U = centrally located nodes
-        (Adelaide, Melbourne, Sydney, Brisbane)
-   
-    Classification based on transport distances only.
-    Does NOT imply rural vs metropolitan inequity.
-    This is a modelled logistics proxy only.
-   
-    Range: 0 (no disparity) to 1.
-    Lower is better.
-    Minimise F4 directly.
-    """
-    # Get distant and central patients
-    distant_patients = [
-        p for p in pool_pairs
-        if classify_node(p.hospital_node) == 'R'
-    ]
-    central_patients = [
-        p for p in pool_pairs
-        if classify_node(p.hospital_node) == 'U'
-    ]
-
-    n_distant = len(distant_patients)
-    n_central = len(central_patients)
-
-    if n_distant == 0 or n_central == 0:
-        return 0.0
-
-    # Count matched in each group
-    matched_distant = sum(
-        1 for p in distant_patients
-        if p.pair_id in matched_pair_ids
-    )
-    matched_central = sum(
-        1 for p in central_patients
-        if p.pair_id in matched_pair_ids
-    )
-
-    rate_distant = matched_distant / n_distant
-    rate_central = matched_central / n_central
-
-    disparity = abs(rate_distant - rate_central)
-    return float(np.clip(disparity, 0.0, 1.0))
-
-
-def compute_all_objectives(
-    matched_pair_ids: Set[int],
-    pool_pairs: List[Patient]
-) -> Dict[str, float]:
-    """
-    Compute all four objectives for a given solution.
-   
-    Returns dict with F1 F2 F3 F4 values.
-   
-    For NSGA-III minimisation:
-    F1 is negated (maximise transplants).
-    F2 minimised directly (lower Gini = more equal).
-    F3 minimised directly (lower GFG = more fair).
-    F4 minimised directly (lower disparity = more fair).
-    """
-    f1 = compute_f1_efficiency(
-        matched_pair_ids, pool_pairs
-    )
-    f2 = compute_f2_gini_fast(pool_pairs)
-    f3 = compute_f3_group_fairness(
-        matched_pair_ids, pool_pairs
-    )
-    f4 = compute_f4_logistics_disparity(
-        matched_pair_ids, pool_pairs
-    )
-
+    matched = set(matched_pair_ids)
+    f1 = compute_f1_efficiency(matched, pool_pairs)
     return {
-        'F1': f1,           # Raw value (higher better)
-        'F1_neg': -f1,      # Negated for minimisation
-        'F2': f2,           # Gini (lower better)
-        'F3': f3,           # GFG (lower better)
-        'F4': f4,           # Disparity (lower better)
-        'n_matched': len(matched_pair_ids),
-        'n_pool': len(pool_pairs)
+        'F1': f1,
+        'F1_neg': -f1,
+        'F2': compute_f2_gini(pool_pairs, matched, f2_mode),
+        'F3': compute_f3_group_fairness(matched, pool_pairs, mode),
+        'F4': compute_f4_logistics_disparity(matched, pool_pairs),
+        'n_matched': int(f1),
+        'n_pool': len(_patients(pool_pairs)),
     }
 
 
-def compute_pof(
-    f1_ilp: float,
-    f1_moea: float
-) -> float:
+# ============================================================
+# FAST EVALUATOR (used inside NSGA-III)
+# ============================================================
+
+class ObjectiveEvaluator:
     """
-    Compute Price of Fairness at round t.
-   
-    PoF_t = (F1_ILP(t) - F1_MOEA(t))
-            / F1_ILP(t) × 100%
-   
-    F1_ILP and F1_MOEA computed on identical
-    pool state, compatibility graph, and
-    operational feasibility constraints.
-   
-    Returns PoF as percentage.
+    Precomputes pool attributes once per round so each solution is
+    evaluated with a few NumPy operations.
+
+        ev = ObjectiveEvaluator(pool_pairs)
+        f  = ev.evaluate(matched_ids)        # raw (F1, F2, F3, F4)
+        g  = ev.minimisation_vector(f)       # normalised, all minimised
+    """
+
+    def __init__(self, pool_pairs: List[Patient], mode: str = F3_MODE,
+                 f2_mode: str = F2_MODE):
+        self.mode = mode
+        self.f2_mode = f2_mode
+        self.ids = np.array([p.pair_id for p in pool_pairs], dtype=np.int64)
+        self.index = {int(pid): k for k, pid in enumerate(self.ids)}
+        self.patient = np.array([not p.is_altruistic for p in pool_pairs])
+        self.high = np.array([p.is_highly_sensitised and not p.is_altruistic
+                              for p in pool_pairs])
+        distant = np.array([classify_node(p.hospital_node) == 'R'
+                            for p in pool_pairs])
+        self.R = distant & self.patient
+        self.U = ~distant & self.patient
+        self.wait = np.array([p.waiting_time for p in pool_pairs], dtype=float)
+        self.n_patients = int(self.patient.sum())
+        self.n_high = int(self.high.sum())
+        self.n_R, self.n_U = int(self.R.sum()), int(self.U.sum())
+
+    def mask(self, matched_pair_ids: Iterable[int]) -> np.ndarray:
+        m = np.zeros(len(self.ids), dtype=bool)
+        for pid in matched_pair_ids:
+            k = self.index.get(int(pid))
+            if k is not None:
+                m[k] = True
+        return m
+
+    def evaluate(self, matched_pair_ids: Iterable[int]) -> np.ndarray:
+        """Raw objectives (F1, F2, F3, F4) of one solution."""
+        m = self.mask(matched_pair_ids) & self.patient
+        f1 = float(m.sum())
+        if self.f2_mode == "residual":
+            f2 = gini(self.wait[self.patient & ~m])
+        else:
+            w = np.where(m, self.wait, self.wait + ROUND_INCREMENT)
+            f2 = gini(w[self.patient])
+        if self.n_high == 0 or self.n_patients == 0:
+            f3 = 0.0
+        else:
+            rate_s = (m & self.high).sum() / self.n_high
+            f3 = float(rate_s if self.mode == "access"
+                       else abs(rate_s - f1 / self.n_patients))
+        f4 = (abs((m & self.R).sum() / self.n_R - (m & self.U).sum() / self.n_U)
+              if self.n_R and self.n_U else 0.0)
+        return np.array([f1, f2, f3, float(f4)])
+
+    def minimisation_vector(self, raw: np.ndarray) -> np.ndarray:
+        """
+        Normalised objectives in [0, 1], all to be MINIMISED:
+          (1 - F1/n_patients, F2, F3 or 1-F3 for "access", F4)
+        Use this for NSGA-III and hypervolume, so the four
+        objectives are on the same scale.
+        """
+        raw = np.atleast_2d(raw).astype(float)
+        out = raw.copy()
+        out[:, 0] = 1.0 - raw[:, 0] / max(1, self.n_patients)
+        if self.mode == "access":
+            out[:, 2] = 1.0 - raw[:, 2]
+        return out if out.shape[0] > 1 else out[0]
+
+
+# ============================================================
+# EXTRA PER-ROUND METRICS (for Section 4.5 reporting)
+# ============================================================
+
+def round_metrics(matched_pair_ids: Set[int],
+                  pool_pairs: List[Patient]) -> Dict[str, float]:
+    """
+    Descriptive metrics that explain the objectives in the paper:
+    match rates per group, waiting times, altruists used.
+    """
+    matched = set(matched_pair_ids)
+    pts = _patients(pool_pairs)
+    alts = [p for p in pool_pairs if p.is_altruistic]
+    S = [p for p in pts if p.is_highly_sensitised]
+    R = [p for p in pts if classify_node(p.hospital_node) == 'R']
+    U = [p for p in pts if classify_node(p.hospital_node) == 'U']
+
+    def rate(group):
+        return (sum(p.pair_id in matched for p in group) / len(group)
+                if group else float('nan'))
+
+    m_pts = [p for p in pts if p.pair_id in matched]
+    rest = [p for p in pts if p.pair_id not in matched]
+    return {
+        'n_patients': len(pts),
+        'n_high_cpra': len(S),
+        'n_altruists': len(alts),
+        'altruists_used': sum(p.pair_id in matched for p in alts),
+        'match_rate_all': rate(pts),
+        'match_rate_high_cpra': rate(S),            # |M∩S|/|S|
+        'match_rate_low_cpra': rate([p for p in pts if not p.is_highly_sensitised]),
+        'match_rate_distant': rate(R),              # |M∩R|/|R|
+        'match_rate_central': rate(U),              # |M∩U|/|U|
+        'mean_wait_matched': (float(np.mean([p.waiting_time for p in m_pts]))
+                              if m_pts else float('nan')),
+        'mean_wait_remaining': (float(np.mean([p.waiting_time for p in rest]))
+                                if rest else float('nan')),
+        'pool_wait_gini': gini([p.waiting_time for p in pts]),
+    }
+
+
+# ============================================================
+# PRICE OF FAIRNESS
+# ============================================================
+
+def compute_pof(f1_ilp: float, f1_moea: float) -> float:
+    """
+    PoF_t = (F1_ILP(t) - F1_MOEA(t)) / F1_ILP(t) x 100%   (Eq. 13)
+
+    F1_ILP and F1_MOEA must come from the identical pool, graph and
+    exchange structures. Returns NaN if F1_ILP = 0 (undefined).
+    A negative value means the MOEA beat the 'ceiling', i.e. the
+    two did not use the same feasible set; this is warned about,
+    not hidden by clipping.
     """
     if f1_ilp <= 0:
-        return 0.0
+        return float('nan')
     pof = (f1_ilp - f1_moea) / f1_ilp * 100.0
-    return float(np.clip(pof, 0.0, 100.0))
+    if pof < -1e-9:
+        warnings.warn(f"PoF < 0 (F1_MOEA={f1_moea} > F1_ILP={f1_ilp}): "
+                      "ILP and MOEA are not using the same feasible set.")
+    return float(pof)
 
-def repair_to_feasible_matching(
-    selected_pair_ids: Set[int],
-    edges: Dict
-) -> Set[int]:
-    """
-    Given a set of selected pair IDs from NSGA-III,
-    find the largest feasible matching using valid
-    2-cycles and 3-cycles only.
-    
-    This repair ensures MOEA solutions are feasible
-    so F1_MOEA is comparable to F1_ILP.
-    """
-    selected = list(selected_pair_ids)
-    edge_set = set(edges.keys())
-    matched = set()
-
-    # Find all valid 2-cycles among selected pairs
-    two_cycles = []
-    for i in range(len(selected)):
-        for j in range(i + 1, len(selected)):
-            a = selected[i]
-            b = selected[j]
-            if (a, b) in edge_set and (b, a) in edge_set:
-                two_cycles.append((a, b))
-
-    # Find all valid 3-cycles among selected pairs
-    three_cycles = []
-    for i in range(len(selected)):
-        for j in range(len(selected)):
-            if i == j:
-                continue
-            for k in range(len(selected)):
-                if k == i or k == j:
-                    continue
-                a, b, c = selected[i], selected[j], selected[k]
-                if ((a, b) in edge_set and
-                    (b, c) in edge_set and
-                    (c, a) in edge_set):
-                    key = tuple(sorted([a, b, c]))
-                    if key not in [
-                        tuple(sorted(x)) for x in three_cycles
-                    ]:
-                        three_cycles.append((a, b, c))
-
-    # Greedy: prefer 3-cycles first (more transplants)
-    for cycle in three_cycles:
-        if not any(p in matched for p in cycle):
-            matched.update(cycle)
-
-    # Then add 2-cycles
-    for cycle in two_cycles:
-        if not any(p in matched for p in cycle):
-            matched.update(cycle)
-
-    return matched
 
 # ============================================================
 # TEST MODULE 4
@@ -330,93 +323,100 @@ def repair_to_feasible_matching(
 
 if __name__ == "__main__":
 
+    import time
     from module1_generator import generate_initial_pool
-    from module3_logistics import build_compatibility_graph
+    from module3_logistics import (build_compatibility_graph,
+                                   build_exchange_structures)
 
-    print("=" * 55)
-    print("MODULE 4: FOUR OBJECTIVES TEST")
-    print("=" * 55)
+    print("=" * 60)
+    print("MODULE 4: FOUR OBJECTIVES + PRICE OF FAIRNESS")
+    print(f"F2 mode: {F2_MODE}   F3 mode: {F3_MODE}")
+    print("=" * 60)
 
-    # Generate pool
-    pool, next_id = generate_initial_pool(
-        n_pairs=75,
-        seed=42
-    )
+    pool, _ = generate_initial_pool(n_pairs=75, seed=42, initial_wait_max=12)
+    pairs = pool.pairs
+    edges = build_compatibility_graph(pairs)
+    st = build_exchange_structures(pairs, edges)
 
-    # Simulate some waiting times
-    import random
-    random.seed(42)
-    for p in pool.pairs:
-        p.waiting_time = random.randint(0, 10)
+    def greedy(order):
+        """Pack structures greedily in the given order (test helper)."""
+        used, chosen = set(), set()
+        for k in order:
+            if not used & set(st.nodes[k]):
+                used |= set(st.nodes[k])
+                chosen |= set(st.nodes[k])
+        return chosen
 
-    print(f"\nPool size: {pool.size()}")
+    by_id = {p.pair_id: p for p in pairs}
+    n_high = lambda k: sum(by_id[i].is_highly_sensitised for i in st.recipients[k])
+    wait_sum = lambda k: sum(by_id[i].waiting_time for i in st.recipients[k])
+    distant = lambda k: sum(classify_node(by_id[i].hospital_node) == 'R'
+                            for i in st.recipients[k])
+    K = range(len(st))
+    solutions = {
+        "empty matching":        set(),
+        "largest first":         greedy(sorted(K, key=lambda k: -st.size(k))),
+        "high-cPRA first":       greedy(sorted(K, key=lambda k: (-n_high(k), -st.size(k)))),
+        "longest-waiting first": greedy(sorted(K, key=lambda k: (-wait_sum(k), -st.size(k)))),
+        "distant nodes first":   greedy(sorted(K, key=lambda k: (-distant(k), -st.size(k)))),
+    }
 
-    # Build compatibility graph
-    edges = build_compatibility_graph(pool.pairs)
-    print(f"Feasible edges: {len(edges)}")
+    ev = ObjectiveEvaluator(pairs)
+    print(f"\nPool: {ev.n_patients} patients, {ev.n_high} high-cPRA, "
+          f"R={ev.n_R} distant, U={ev.n_U} central, "
+          f"{len(pool.altruists())} altruists")
+    print(f"\n{'Solution':<23}{'F1':>5}{'F2':>8}{'F3':>8}{'F4':>8}"
+          f"{'hiCPRA%':>9}{'alt used':>9}")
+    print("-" * 70)
+    for name, sol in solutions.items():
+        f = ev.evaluate(sol)
+        rm = round_metrics(sol, pairs)
+        print(f"{name:<23}{f[0]:>5.0f}{f[1]:>8.3f}{f[2]:>8.3f}{f[3]:>8.3f}"
+              f"{rm['match_rate_high_cpra'] * 100:>8.1f}%{rm['altruists_used']:>9}")
+    print("  -> F2 now differs between solutions (it was constant before).")
+    print("  -> The empty matching has F3 = F4 = 0: always Pareto-optimal.")
 
-    # Simulate two scenarios:
-    # Scenario 1: No matches (empty solution)
-    # Scenario 2: Matched some pairs
+    print("\n--- F2 definition check: who should F2 reward? ---")
+    sw = lambda k: wait_sum(k) / max(1, st.size(k))
+    short = greedy(sorted(K, key=lambda k: (sw(k), -st.size(k))))
+    longw = solutions["longest-waiting first"]
+    for mode in ("post_round", "residual"):
+        a = compute_f2_gini(pairs, longw, mode)
+        b = compute_f2_gini(pairs, short, mode)
+        verdict = "correct" if a < b else "WRONG incentive"
+        print(f"  {mode:<11} longest-waiting first F2={a:.4f}  "
+              f"shortest-waiting first F2={b:.4f}  -> {verdict}")
 
-    # Get first 10 feasible pair IDs as mock matches
-    all_pair_ids = [p.pair_id for p in pool.pairs]
-    mock_matched = set(all_pair_ids[:8])
+    print("\n--- Consistency checks ---")
+    sol = solutions["largest first"]
+    slow = compute_all_objectives(sol, pairs)
+    fast = ev.evaluate(sol)
+    print(f"  Fast evaluator == readable functions: "
+          f"{np.allclose(fast, [slow['F1'], slow['F2'], slow['F3'], slow['F4']])}")
+    w = [p.waiting_time for p in pool.patients()]
+    print(f"  O(n log n) Gini == double-sum Gini (Eq. 7): "
+          f"{np.isclose(gini(w), gini_pairwise(w))}")
+    alt_ids = {p.pair_id for p in pool.altruists()}
+    print(f"  Altruists never counted in F1: "
+          f"{compute_f1_efficiency(alt_ids, pairs) == 0}")
+    print(f"  Minimisation vector (largest first): "
+          f"{np.round(ev.minimisation_vector(fast), 3)}")
 
-    print("\n--- Scenario 1: No Matches ---")
-    obj_none = compute_all_objectives(
-        matched_pair_ids=set(),
-        pool_pairs=pool.pairs
-    )
-    print(f"  F1 (efficiency):    {obj_none['F1']:.4f}")
-    print(f"  F2 (Gini):          {obj_none['F2']:.4f}")
-    print(f"  F3 (GFG):           {obj_none['F3']:.4f}")
-    print(f"  F4 (disparity):     {obj_none['F4']:.4f}")
+    t0 = time.time()
+    for _ in range(10000):
+        ev.evaluate(sol)
+    print(f"  10,000 evaluations: {time.time() - t0:.2f} s")
 
-    print("\n--- Scenario 2: 8 Pairs Matched ---")
-    obj_matched = compute_all_objectives(
-        matched_pair_ids=mock_matched,
-        pool_pairs=pool.pairs
-    )
-    print(f"  F1 (efficiency):    {obj_matched['F1']:.4f}")
-    print(f"  F2 (Gini):          {obj_matched['F2']:.4f}")
-    print(f"  F3 (GFG):           {obj_matched['F3']:.4f}")
-    print(f"  F4 (disparity):     {obj_matched['F4']:.4f}")
+    print("\n--- Per-round metrics (largest first) ---")
+    for k, v in round_metrics(solutions["largest first"], pairs).items():
+        print(f"  {k:<22} {v:.3f}" if isinstance(v, float) else f"  {k:<22} {v}")
 
-    # Test PoF computation
-    print("\n--- PoF Computation Test ---")
-    f1_ilp_mock = 15.0   # ILP volume ceiling
-    f1_moea_mock = 13.0  # MOEA fairness solution
+    print("\n--- PoF (Eq. 13) ---")
+    print(f"  F1_ILP=15, F1_MOEA=13 -> PoF = {compute_pof(15, 13):.2f}%")
+    print(f"  F1_ILP=15, F1_MOEA=15 -> PoF = {compute_pof(15, 15):.2f}%")
+    print(f"  F1_ILP=0,  F1_MOEA=0  -> PoF = {compute_pof(0, 0)}  (undefined)")
 
-    pof = compute_pof(f1_ilp_mock, f1_moea_mock)
-    print(f"  F1 ILP ceiling:     {f1_ilp_mock}")
-    print(f"  F1 MOEA solution:   {f1_moea_mock}")
-    print(f"  PoF:                {pof:.2f}%")
-
-    # Pool composition breakdown
-    sensitised = [
-        p for p in pool.pairs
-        if p.is_highly_sensitised
-    ]
-    distant = [
-        p for p in pool.pairs
-        if classify_node(p.hospital_node) == 'R'
-    ]
-    central = [
-        p for p in pool.pairs
-        if classify_node(p.hospital_node) == 'U'
-    ]
-
-    print("\n--- Pool Composition ---")
-    print(f"  Total pairs:        {pool.size()}")
-    print(f"  Sensitised (S):     {len(sensitised)} "
-          f"({len(sensitised)/pool.size()*100:.1f}%)")
-    print(f"  Distant nodes (R):  {len(distant)} "
-          f"({len(distant)/pool.size()*100:.1f}%)")
-    print(f"  Central nodes (U):  {len(central)} "
-          f"({len(central)/pool.size()*100:.1f}%)")
-
-    print("\n" + "=" * 55)
+    print("\n" + "=" * 60)
     print("MODULE 4 COMPLETE")
     print("Ready for Module 5: NSGA-III with AOS")
-    print("=" * 55)
+    print("=" * 60)
