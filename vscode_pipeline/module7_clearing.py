@@ -3,36 +3,53 @@ from typing import Callable, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
-from module1_generator import Patient, Pool, generate_arrivals, generate_initial_pool
-from module3_logistics import build_compatibility_graph
-
-try:                                     # file name used in VS Code project
-    from module2_pool_evolution import LAMBDA_ARRIVALS, MU_D, PoolEvolution
-except ImportError:                      # alternative name in the plan
-    from module2_evolution import LAMBDA_ARRIVALS, MU_D, PoolEvolution
-
-from module4_objectives import compute_all_objectives, compute_f2_gini_fast, compute_pof
+from module1_generator import Patient, Pool, generate_initial_pool
+from module2_pool_evolution import LAMBDA_ARRIVALS, MU_D, PoolEvolution
+from module3_logistics import build_compatibility_graph, build_exchange_structures
+from module4_objectives import compute_all_objectives, compute_pof, round_metrics
 from module5_nsga3_aos import (
     MUTATION_RATES, N_GENERATIONS, N_POPULATION,
-    KEPProblem, LinUCBAOS, UCB1AOS,
-    compute_hypervolume, repair_to_cycles, run_nsga3_with_aos,
+    FixedAOS, LinUCBAOS, MOEAResult, UCB1AOS,
+    build_context_vector, run_moea_round,
 )
 from module6_ilp_baseline import solve_ilp_lexicographic, solve_ilp_max_transplants
 
 # ============================================================
 # MODULE 7: CLEARING STRATEGIES + ONE DYNAMIC TRAJECTORY
-# pi_M: Myopic  - clear every round
-# pi_B: Batched - clear only when pool reaches n* = 90 pairs
+#   pi_M  Myopic:  clear the pool at every round
+#   pi_B  Batched: clear only when the pool holds n* = 90 patients
+# Concept note Sections 3.6, 3.7 and 4.4
 # Paper 2 — Dynamic KEP Implementation
 # ============================================================
 #
-# The clearing policy decides WHETHER round t is cleared.
-# The AOS (UCB1 / LinUCB) works INSIDE a cleared round.
-# These are separate decisions (concept note Section 3.7).
+# One clearing round t (when the policy says "clear"):
+#   1. G_t   = compatibility graph of V_t             (module 3)
+#   2. S_t   = cycles + chains of G_t, built ONCE     (module 3)
+#   3. ILP on S_t -> F1_ILP(t) and its structures     (module 6)
+#   4. the configuration's matching on S_t:
+#        ILP / Dickerson lexicographic                (module 6)
+#        NSGA-III / NSGA-II + AOS, ILP-guided         (module 5)
+#   5. one solution of the Pareto front is IMPLEMENTED
+#      (selection rule, see select_solution)
+#   6. PoF_t = (F1_ILP - F1_implemented) / F1_ILP      (Eq. 13)
+# Then the pool evolves: V_{t+1} = V_t \ M_t \ X_t \ W_t U A_t
+# (module 2). If the policy says "wait", only step 6's pool
+# evolution happens (no matching).
+#
+# Clearing policy (WHETHER to clear) and AOS (HOW to search
+# inside a round) are separate decisions (Section 3.7).
+#
+# Dynamic vs static configurations (Section 4.4):
+#   dynamic: AOS state persists across rounds and the previous
+#            round's front warm-starts the next round
+#   static:  fresh AOS and no warm start in every round (Paper 1)
 
 BATCH_THRESHOLD = 90       # n* (upper ANZKX pool size)
 N_ROUNDS = 25              # T in 20..30
 INITIAL_POOL_SIZE = 75
+INITIAL_WAIT_MAX = 6       # spread initial waiting times over 0..5
+SELECTION_RULE = "floor"
+MIN_F1_RATIO = 0.9         # efficiency floor for the "floor" rule
 
 
 # ============================================================
@@ -45,7 +62,7 @@ def count_patients(pool_pairs: List[Patient]) -> int:
 
 
 class MyopicClearing:
-    """pi_M: clear the pool at every round."""
+    """pi_M: clear the pool at every round (primary baseline policy)."""
     name = "myopic"
 
     def should_clear(self, pool: Pool, round_number: int) -> bool:
@@ -56,10 +73,10 @@ class BatchedClearing:
     """
     pi_B: clear only when the pool holds n* patients.
 
-    max_interval (optional, default None = pure rule from the
-    concept note): also clear if this many rounds passed since
-    the last clearing. Without it pi_B never clears when the
-    steady-state pool (about lambda x tau) stays below n*.
+    max_interval (optional, default None = the rule as written):
+    also clear if this many rounds passed since the last clearing.
+    Without it pi_B never clears when the steady-state pool stays
+    below n* (e.g. small lambda with tau = 6).
     """
     name = "batched"
 
@@ -87,130 +104,40 @@ def make_policy(name: str, threshold: int = BATCH_THRESHOLD,
     raise ValueError(f"Unknown clearing policy: {name}")
 
 
-# ============================================================
-# PAIRED POOL EVOLUTION (common random numbers)
-# ============================================================
-
-class PairedPoolEvolution(PoolEvolution):
-    """
-    Same pool equation as module 2, but every random event is
-    tied to (run seed, round) or (run seed, pair, round).
-
-    Why: all 8 baselines in run r must see the SAME arrivals
-    and the SAME competing exits, so they differ only through
-    their matching decisions. This is what makes the paired
-    Wilcoxon signed-rank test in module 8 valid.
-    (Module 2 draws exits and arrivals from one shared RNG, so
-    different matchings would shift every later random draw.)
-    """
-
-    def __init__(self, *args, base_seed: int = 42, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.base_seed = int(base_seed)
-
-    def compute_competing_exits(self) -> List[Patient]:
-        exits, remaining = [], []
-        for pair in self.pool.pairs:
-            if pair.is_altruistic:
-                remaining.append(pair)
-                continue
-            u = np.random.default_rng(
-                [self.base_seed, pair.pair_id, self.current_round, 3]
-            ).random()
-            (exits if u < self.mu_d else remaining).append(pair)
-        self.pool.pairs = remaining
-        return exits
-
-    def compute_arrivals(self) -> List[Patient]:
-        rng = np.random.RandomState(
-            (self.base_seed * 7919 + self.current_round) % (2 ** 32))
-        n_arrivals = max(1, rng.poisson(self.lambda_arrivals))
-        # module 1 uses the global numpy RNG; seed it per round
-        np.random.seed(
-            (self.base_seed * 104729 + self.current_round) % (2 ** 32))
-        new_pairs, self.next_pair_id = generate_arrivals(
-            n_arrivals=n_arrivals,
-            next_pair_id=self.next_pair_id,
-            arrival_round=self.current_round,
-        )
-        self.pool.pairs.extend(new_pairs)
-        return new_pairs
-
-
-# ============================================================
-# NSGA-II (baseline 1: Paper 1 framework, static)
-# ============================================================
-
-def run_nsga2_with_aos(
-    pool_pairs: List[Patient],
-    ucb1_aos: UCB1AOS,
-    prev_hv: float = 0.0,
-    n_gen: int = N_GENERATIONS,
-    seed: Optional[int] = None,
-    graph_builder: Callable = build_compatibility_graph,
-):
-    """Same interface as module 5's run_nsga3_with_aos, NSGA-II."""
-    from pymoo.algorithms.moo.nsga2 import NSGA2
-    from pymoo.operators.crossover.pntx import TwoPointCrossover
-    from pymoo.operators.mutation.bitflip import BitflipMutation
-    from pymoo.operators.sampling.rnd import BinaryRandomSampling
-    from pymoo.optimize import minimize
-
-    edges = graph_builder(pool_pairs)
-    arm, mutation_rate = ucb1_aos.get_mutation_rate()
-    problem = KEPProblem(pool_pairs, edges, mutation_rate)
-    algorithm = NSGA2(
-        pop_size=N_POPULATION,
-        sampling=BinaryRandomSampling(),
-        crossover=TwoPointCrossover(),
-        mutation=BitflipMutation(prob=1.0, prob_var=mutation_rate),
-        eliminate_duplicates=True,
-    )
-    result = minimize(problem, algorithm, ('n_gen', n_gen),
-                      seed=seed, verbose=False)
-    new_hv = 0.0
-    if result is not None and result.F is not None:
-        new_hv = compute_hypervolume(result.F, len(pool_pairs))
-    ucb1_aos.update(arm, new_hv - prev_hv)
-    return result, new_hv, arm, mutation_rate
+# Module 2 now has paired random numbers built in; this alias keeps
+# module 9 (which subclasses it) working.
+PairedPoolEvolution = PoolEvolution
 
 
 # ============================================================
 # WHICH PARETO SOLUTION IS IMPLEMENTED
 # ============================================================
 
-def select_solution(result, pool_pairs: List[Patient], edges: Dict,
-                    rule: str = "floor",
-                    min_f1_ratio: float = 0.9) -> Set[int]:
+def select_solution(result: MOEAResult, rule: str = SELECTION_RULE,
+                    min_f1_ratio: float = MIN_F1_RATIO) -> Tuple[Set[int], int]:
     """
-    Pick one solution from the final front and repair it.
+    Choose the solution of the front that is actually implemented.
+    Returns (matched pair IDs, index in the front).
 
-    IMPORTANT: F3 and F4 are absolute gaps, so the EMPTY matching
-    (nobody transplanted) gives F3 = F4 = 0 and is always on the
-    Pareto front. Every rule below therefore ignores solutions
-    with F1 = 0 whenever a non-empty solution exists.
+    The EMPTY matching has F3 = F4 = 0 and is always Pareto-optimal,
+    so every rule ignores F1 = 0 when a non-empty solution exists.
 
-    rule:
-      "max_f1"     highest F1 (module 5's extract_best_solution).
-                   PoF then only measures the MOEA's distance from
-                   the ILP optimum, not a fairness trade-off.
+    rule
       "floor"      (default) among solutions with
-                   F1 >= min_f1_ratio x best F1 on the front, take
-                   the fairest one (compromise on F2-F4).
-      "compromise" closest to the ideal point after scaling all
-                   four objectives to [0, 1] over the front.
-      "min_f3"     smallest high-cPRA gap, ties -> higher F1.
+                   F1 >= min_f1_ratio x max F1 on the front, the one
+                   closest to the ideal point on F2, F3, F4
+                   (each scaled to [0, 1] over that subset)
+      "compromise" closest to the ideal point on all four objectives
+      "max_f1"     most transplants (ties -> smaller F3); PoF = 0
+      "min_f3"     smallest high-cPRA gap (ties -> more transplants)
 
-    The rule (and min_f1_ratio) directly shapes PoF_t, so report
-    it in the paper.
+    The rule and min_f1_ratio shape PoF_t: report them in the paper.
     """
-    if result is None or result.F is None:
-        return set()
-    F = np.atleast_2d(result.F)
-    X = np.atleast_2d(result.X)
-
+    if result is None or len(result.matched_sets) == 0:
+        return set(), -1
+    F = np.atleast_2d(result.F)           # (-F1, F2, F3, F4)
     cand = np.arange(len(F))
-    nonempty = cand[F[:, 0] < 0]                 # F[:,0] = -F1
+    nonempty = cand[F[:, 0] < 0]
     if len(nonempty):
         cand = nonempty
 
@@ -218,8 +145,7 @@ def select_solution(result, pool_pairs: List[Patient], edges: Dict,
         G = F[np.ix_(idx, cols)]
         lo, hi = G.min(axis=0), G.max(axis=0)
         span = np.where(hi - lo > 1e-12, hi - lo, 1.0)
-        return int(idx[np.argmin(np.linalg.norm((G - lo) / span,
-                                                axis=1))])
+        return int(idx[np.argmin(np.linalg.norm((G - lo) / span, axis=1))])
 
     if rule == "max_f1":
         best = int(cand[np.lexsort((F[cand, 2], F[cand, 0]))[0]])
@@ -228,21 +154,25 @@ def select_solution(result, pool_pairs: List[Patient], edges: Dict,
     elif rule == "compromise":
         best = compromise(cand, [0, 1, 2, 3])
     elif rule == "floor":
-        best_f1 = -F[cand, 0].min()
-        ok = cand[-F[cand, 0] >= min_f1_ratio * best_f1 - 1e-9]
+        f1_max = -F[cand, 0].min()
+        ok = cand[-F[cand, 0] >= min_f1_ratio * f1_max - 1e-9]
         best = compromise(ok, [1, 2, 3])
     else:
         raise ValueError(f"Unknown selection rule: {rule}")
-
-    x = np.asarray(X[best]).astype(int)
-    selected = {pool_pairs[j].pair_id
-                for j in range(len(pool_pairs)) if x[j] == 1}
-    return repair_to_cycles(selected, edges)
+    return set(result.matched_sets[best]), best
 
 
 # ============================================================
 # ONE TRAJECTORY: T ROUNDS FOR ONE CONFIGURATION
 # ============================================================
+
+def make_aos(name: str, seed: int):
+    if name == "ucb1":
+        return UCB1AOS(seed=seed)
+    if name == "linucb":
+        return LinUCBAOS(seed=seed)
+    return FixedAOS()
+
 
 def simulate_trajectory(
     config: Dict,
@@ -250,36 +180,33 @@ def simulate_trajectory(
     run_seed: int,
     n_rounds: int = N_ROUNDS,
     n_gen: int = N_GENERATIONS,
+    pop_size: int = N_POPULATION,
     n_pairs: int = INITIAL_POOL_SIZE,
-    selection_rule: str = "floor",
-    min_f1_ratio: float = 0.9,
+    selection_rule: str = SELECTION_RULE,
+    min_f1_ratio: float = MIN_F1_RATIO,
     batch_threshold: int = BATCH_THRESHOLD,
     batch_max_interval: Optional[int] = None,
     mu_d: float = MU_D,
     lambda_arrivals: float = LAMBDA_ARRIVALS,
+    initial_wait_max: int = INITIAL_WAIT_MAX,
+    ilp_guided: bool = True,
     graph_builder: Callable = build_compatibility_graph,
     initial_pool: Optional[Tuple[Pool, int]] = None,
     evolution_factory: Optional[Callable] = None,
-    initial_wait_max: int = 6,
     verbose: bool = False,
 ) -> List[Dict]:
     """
     Simulate one configuration for n_rounds clearing rounds.
 
-    config keys:
-      name     label, e.g. "dyn_nsga3_ucb1_myopic"
-      method   "nsga3" | "nsga2" | "ilp" | "lex"
-      aos      "ucb1" | "linucb" | "none"
-      clearing "myopic" | "batched"
-      dynamic  True  -> AOS state + previous HV kept across rounds
-               False -> fresh AOS every round (static baselines)
+    config keys
+      name      label, e.g. "dyn_nsga3_ucb1_myopic"
+      method    "nsga3" | "nsga2" | "ilp" | "lex"
+      aos       "ucb1" | "linucb" | "none"
+      clearing  "myopic" | "batched"
+      dynamic   True: AOS persists + warm start; False: static
 
-    initial_wait_max: module 1 starts every initial pair at
-      waiting_time 0, so the whole initial pool withdraws in the
-      same round (round tau). To avoid that cliff, initial pairs
-      get a seeded waiting time uniform in 0..initial_wait_max-1.
-      Set 0 to keep module 1's behaviour.
-
+    All configurations with the same run_seed see the same initial
+    pool, arrivals and competing exits (paired design).
     Returns one dict per round.
     """
     method = config["method"]
@@ -287,95 +214,91 @@ def simulate_trajectory(
     dynamic = config.get("dynamic", True)
 
     if initial_pool is None:
-        pool, next_id = generate_initial_pool(n_pairs=n_pairs,
-                                              seed=run_seed)
+        pool, next_id = generate_initial_pool(n_pairs=n_pairs, seed=run_seed,
+                                              initial_wait_max=initial_wait_max)
     else:
         pool, next_id = initial_pool
-    if initial_wait_max > 0:
-        wrng = np.random.default_rng([run_seed, 11])
-        for p in pool.pairs:
-            p.waiting_time = int(wrng.integers(0, initial_wait_max))
     if evolution_factory is None:
-        evo = PairedPoolEvolution(
-            initial_pool=pool, next_pair_id=next_id, tau_months=tau,
-            mu_d=mu_d, lambda_arrivals=lambda_arrivals,
-            seed=run_seed, base_seed=run_seed)
+        evo = PoolEvolution(pool, next_id, tau_months=tau, mu_d=mu_d,
+                            lambda_arrivals=lambda_arrivals, seed=run_seed)
     else:
         evo = evolution_factory(pool, next_id, tau)
-    policy = make_policy(config["clearing"], batch_threshold,
-                         batch_max_interval)
+    policy = make_policy(config["clearing"], batch_threshold, batch_max_interval)
 
-    ucb1 = UCB1AOS()
-    linucb = LinUCBAOS()
-    prev_hv, prev_pof, prev_exits = 0.0, 0.0, 0
+    aos = make_aos(aos_name, run_seed)
+    prev_pof, prev_exits = 0.0, 0
+    warm: List[Set[int]] = []
     rows: List[Dict] = []
 
     for r in range(1, n_rounds + 1):
         pairs = evo.pool.pairs
-        high = [p for p in pairs
-                if p.is_highly_sensitised and not p.is_altruistic]
+        pts = [p for p in pairs if not p.is_altruistic]
+        high = [p for p in pts if p.is_highly_sensitised]
         row = {
             "config": config["name"], "tau": tau, "run_seed": run_seed,
-            "round": r, "pool_size": len(pairs),
-            "n_patients": count_patients(pairs),
-            "n_high_cpra": len(high), "cleared": False,
+            "round": r, "pool_size": len(pairs), "n_patients": len(pts),
+            "n_altruists": len(pairs) - len(pts), "n_high_cpra": len(high),
+            "high_cpra_share": len(high) / max(1, len(pts)),
+            "mean_wait": float(np.mean([p.waiting_time for p in pts])) if pts else 0.0,
+            "cleared": False,
         }
         matched: Set[int] = set()
 
         if policy.should_clear(evo.pool, r):
             t0 = time.time()
             edges = graph_builder(pairs)
+            structures = build_exchange_structures(pairs, edges)
             ilp_ids, f1_ilp, ilp_info = solve_ilp_max_transplants(
-                pairs, edges)
-            hv, arm, rate = np.nan, -1, np.nan
-            round_seed = (run_seed * 1000 + r) % (2 ** 31)
+                pairs, edges, structures)
+            hv, front_size = np.nan, 0
+            arm_counts = np.zeros(len(MUTATION_RATES), dtype=int)
 
             if method == "ilp":
                 matched = ilp_ids
             elif method == "lex":
-                matched, _, _ = solve_ilp_lexicographic(pairs, edges)
+                matched, _, _ = solve_ilp_lexicographic(pairs, edges, structures)
             else:
-                if not dynamic:              # static baseline
-                    ucb1, linucb, prev_hv = UCB1AOS(), LinUCBAOS(), 0.0
-                if method == "nsga2":
-                    result, hv, arm, rate = run_nsga2_with_aos(
-                        pairs, ucb1, prev_hv, n_gen, round_seed,
-                        graph_builder)
-                else:
-                    context = linucb.build_context_vector(
-                        pool_pairs=pairs,
-                        competing_exits=prev_exits,
-                        clearing_round=r,
-                        gini_t=compute_f2_gini_fast(pairs),
-                        pof_prev=prev_pof / 100.0,  # PoF as fraction
-                    )
-                    result, hv, arm, rate = run_nsga3_with_aos(
-                        pool_pairs=pairs, aos_mechanism=aos_name,
-                        ucb1_aos=ucb1, linucb_aos=linucb,
-                        context=context, prev_hv=prev_hv,
-                        n_gen=n_gen, seed=round_seed)
-                prev_hv = hv
-                matched = select_solution(result, pairs, edges,
-                                          selection_rule, min_f1_ratio)
+                if not dynamic:                    # static: Paper 1 style
+                    aos = make_aos(aos_name, run_seed * 1000 + r)
+                context = build_context_vector(pairs, prev_exits, r,
+                                               n_rounds, prev_pof)
+                res = run_moea_round(
+                    pairs, aos, context,
+                    algorithm=method, n_gen=n_gen, pop_size=pop_size,
+                    seed=(run_seed * 1000 + r) % (2 ** 31),
+                    edges=edges, structures=structures,
+                    warm_start=warm if dynamic else None,
+                    guide_structures=(ilp_info["structure_indices"]
+                                      if ilp_guided else None),
+                )
+                matched, _ = select_solution(res, selection_rule, min_f1_ratio)
+                hv, front_size = res.final_hv, len(res.matched_sets)
+                arm_counts = res.arm_counts()
+                if dynamic:
+                    warm = res.matched_sets
 
             obj = compute_all_objectives(matched, pairs)
-            # PoF is undefined when no transplant was possible
-            # (F1_ILP = 0); store NaN so it is excluded from means.
-            pof = compute_pof(f1_ilp, obj["F1"]) if f1_ilp > 0 \
-                else float("nan")
-            if method in ("nsga3", "nsga2") and f1_ilp > 0:
+            pof = compute_pof(f1_ilp, obj["F1"])    # NaN if F1_ILP = 0
+            if method in ("nsga3", "nsga2") and not np.isnan(pof):
                 prev_pof = pof
+            rm = round_metrics(matched, pairs)
             row.update({
                 "cleared": True,
                 "n_edges": len(edges),
-                "n_cycles": ilp_info["n_cycles"],
+                "n_cycles": structures.n_cycles(),
+                "n_chains": structures.n_chains(),
+                "chains_truncated": structures.truncated,
                 "F1_ILP": f1_ilp,
-                "F1": obj["F1"], "F2": obj["F2"],
-                "F3": obj["F3"], "F4": obj["F4"],
-                "PoF": pof, "HV": hv, "arm": arm,
-                "mutation_rate": rate,
-                "high_cpra_matched": sum(1 for p in high
-                                         if p.pair_id in matched),
+                "F1": obj["F1"], "F2": obj["F2"], "F3": obj["F3"], "F4": obj["F4"],
+                "PoF": pof, "HV": hv, "front_size": front_size,
+                "arm": int(np.argmax(arm_counts)) if arm_counts.sum() else -1,
+                **{f"arm_{rate}": int(c) for rate, c in zip(MUTATION_RATES, arm_counts)},
+                "high_cpra_matched": sum(1 for p in high if p.pair_id in matched),
+                "match_rate_high_cpra": rm["match_rate_high_cpra"],
+                "match_rate_low_cpra": rm["match_rate_low_cpra"],
+                "match_rate_distant": rm["match_rate_distant"],
+                "match_rate_central": rm["match_rate_central"],
+                "altruists_used": rm["altruists_used"],
                 "seconds": time.time() - t0,
             })
 
@@ -384,23 +307,55 @@ def simulate_trajectory(
         row.update({
             "matched": stats["matched"],
             "withdrawn": stats["withdrawn"],
+            "withdrawn_high_cpra": stats.get("withdrawn_high_cpra", 0),
             "competing_exits": stats["competing_exits"],
+            "exits_high_cpra": stats.get("exits_high_cpra", 0),
             "arrivals": stats["arrivals"],
         })
         rows.append(row)
 
         if verbose:
             if row["cleared"]:
-                pof_txt = ("   n/a" if np.isnan(row["PoF"])
-                           else f"{row['PoF']:6.2f}")
-                print(f"  r={r:<3} pool={row['pool_size']:>3} "
-                      f"F1={row['F1']:>4.0f}/{row['F1_ILP']:<4.0f} "
-                      f"PoF={pof_txt}%  F3={row['F3']:.3f} "
-                      f"arm={row['arm']}")
+                pof_txt = "  n/a" if np.isnan(row["PoF"]) else f"{row['PoF']:5.1f}"
+                print(f"  r={r:<3} patients={row['n_patients']:>3} "
+                      f"F1={row['F1']:>3.0f}/{row['F1_ILP']:<3.0f} "
+                      f"PoF={pof_txt}%  F3={row['F3']:.3f}  "
+                      f"hiCPRA={row['high_cpra_matched']}/{row['n_high_cpra']}")
             else:
-                print(f"  r={r:<3} pool={row['pool_size']:>3} "
-                      f"(not cleared)")
+                print(f"  r={r:<3} patients={row['n_patients']:>3}  (not cleared)")
     return rows
+
+
+# ============================================================
+# LAMBDA CALIBRATION (pool 60-90, ~50-66 transplants / year)
+# ============================================================
+
+def calibrate_lambda(lambdas=(6, 9, 12, 15), taus=(6, 12, 18),
+                     seeds=(1, 2, 3), n_rounds: int = 24,
+                     burn_in: int = 6) -> List[Dict]:
+    """
+    Runs the myopic ILP (fast) for each lambda and tau and reports
+    the steady-state number of waiting patients and transplants per
+    year. ANZKX targets: 60-90 registered pairs, ~50-66 transplants
+    per year (concept note, refs [5][6]).
+    """
+    cfg = {"name": "calib", "method": "ilp", "clearing": "myopic"}
+    out = []
+    for lam in lambdas:
+        for tau in taus:
+            pool_sizes, tx = [], []
+            for s in seeds:
+                rows = simulate_trajectory(cfg, tau, s, n_rounds=n_rounds,
+                                           lambda_arrivals=lam)
+                after = [x for x in rows if x["round"] > burn_in]
+                pool_sizes += [x["n_patients"] for x in after]
+                tx.append(sum(x.get("F1", 0) for x in after) / len(after) * 12)
+            out.append({"lambda": lam, "tau": tau,
+                        "patients_mean": float(np.mean(pool_sizes)),
+                        "patients_min": int(np.min(pool_sizes)),
+                        "patients_max": int(np.max(pool_sizes)),
+                        "transplants_per_year": float(np.mean(tx))})
+    return out
 
 
 # ============================================================
@@ -409,41 +364,46 @@ def simulate_trajectory(
 
 if __name__ == "__main__":
 
-    print("=" * 55)
-    print("MODULE 7: MYOPIC vs BATCHED CLEARING")
-    print("=" * 55)
+    print("=" * 66)
+    print("MODULE 7: MYOPIC vs BATCHED CLEARING (ILP-guided NSGA-III)")
+    print("=" * 66)
 
     TEST_ROUNDS, TEST_GEN, TAU = 12, 20, 12
-
-    for clearing in ("myopic", "batched"):
+    tests = [("myopic", None), ("batched", None), ("batched", 3)]
+    for clearing, interval in tests:
         cfg = {"name": f"dyn_nsga3_ucb1_{clearing}", "method": "nsga3",
                "aos": "ucb1", "clearing": clearing, "dynamic": True}
-        print(f"\n--- {cfg['name']} (tau={TAU}, "
-              f"{TEST_ROUNDS} rounds, n_gen={TEST_GEN}) ---")
-        rows = simulate_trajectory(cfg, tau=TAU, run_seed=1,
-                                   n_rounds=TEST_ROUNDS,
-                                   n_gen=TEST_GEN, verbose=True)
-        cleared = [r for r in rows if r["cleared"]]
-        if cleared:
-            print(f"  Rounds cleared:    {len(cleared)}")
-            print(f"  Total transplants: "
-                  f"{sum(r['F1'] for r in cleared):.0f}")
-            print(f"  Mean PoF:          "
-                  f"{np.nanmean([r['PoF'] for r in cleared]):.2f}%")
+        label = cfg["name"] + (f" (max interval {interval})" if interval else "")
+        print(f"\n--- {label}: tau={TAU}, {TEST_ROUNDS} rounds, n_gen={TEST_GEN} ---")
+        rows = simulate_trajectory(cfg, tau=TAU, run_seed=1, n_rounds=TEST_ROUNDS,
+                                   n_gen=TEST_GEN, batch_max_interval=interval,
+                                   verbose=True)
+        c = [x for x in rows if x["cleared"]]
+        if c:
+            print(f"  Rounds cleared: {len(c)}   transplants: {sum(x['F1'] for x in c):.0f}"
+                  f"   high-cPRA transplanted: {sum(x['high_cpra_matched'] for x in c)}"
+                  f"   mean PoF: {np.nanmean([x['PoF'] for x in c]):.2f}%")
         else:
-            print("  Pool never reached n* - batched never cleared.")
-            print("  Use batch_max_interval or a higher lambda.")
+            print("  Never cleared: the pool never reached n* patients.")
 
-    # Paired design check: same arrivals for different configs
-    a = simulate_trajectory({"name": "ilp", "method": "ilp",
-                             "clearing": "myopic"}, 12, 7, n_rounds=5)
-    b = simulate_trajectory({"name": "lex", "method": "lex",
-                             "clearing": "myopic"}, 12, 7, n_rounds=5)
-    same = [x["arrivals"] for x in a] == [y["arrivals"] for y in b]
-    print(f"\nPaired design (identical arrivals across configs): "
-          f"{same}")
+    print("\n--- Paired design: identical arrivals across configurations ---")
+    a = simulate_trajectory({"name": "ilp", "method": "ilp", "clearing": "myopic"},
+                            12, 7, n_rounds=6)
+    b = simulate_trajectory({"name": "lex", "method": "lex", "clearing": "myopic"},
+                            12, 7, n_rounds=6)
+    print(f"  Same arrivals: {[x['arrivals'] for x in a] == [y['arrivals'] for y in b]}")
+    print(f"  Same F1_ILP in round 1: {a[0]['F1_ILP'] == b[0]['F1_ILP']}")
 
-    print("\n" + "=" * 55)
+    print("\n--- Lambda calibration (myopic ILP, tau=12, 2 seeds, 18 rounds) ---")
+    print("  ANZKX targets: 60-90 patients waiting, ~50-66 transplants/year")
+    print(f"  {'lambda':>6} {'patients mean':>14} {'min-max':>9} {'transplants/yr':>15}")
+    for c in calibrate_lambda(lambdas=(6, 10, 14), taus=(12,), seeds=(1, 2),
+                              n_rounds=18):
+        print(f"  {c['lambda']:>6} {c['patients_mean']:>14.1f} "
+              f"{c['patients_min']:>4}-{c['patients_max']:<4} "
+              f"{c['transplants_per_year']:>15.1f}")
+
+    print("\n" + "=" * 66)
     print("MODULE 7 COMPLETE")
     print("Ready for Module 8: Statistics")
-    print("=" * 55)
+    print("=" * 66)

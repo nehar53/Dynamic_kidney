@@ -55,8 +55,13 @@ MU_D = 0.02
 MU_D_HIGH_CPRA_MULTIPLIER = 1.0
 
 # Poisson arrival rate lambda (pairs + altruists per round).
-# Calibrated so the pool stays in the ANZKX range of 60-90.
-LAMBDA_ARRIVALS = 6.0
+# Calibrated with module 7's calibrate_lambda() (myopic ILP,
+# 3 seeds, 24 rounds): lambda = 10 gives ~67-74 transplants/year
+# (ANZKX: ~50-66) and a waiting pool of ~54 (tau=12) and ~67
+# (tau=18) patients (ANZKX: 60-90). At tau = 6 the pool is ~33
+# for any realistic lambda: with a 6-month limit patients cannot
+# stay long enough (Little's law), so report it as a finding.
+LAMBDA_ARRIVALS = 10.0
 
 # Altruistic donors who are not used within tau months donate
 # to the deceased-donor waitlist instead (leave the pool).
