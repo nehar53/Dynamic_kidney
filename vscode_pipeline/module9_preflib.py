@@ -56,6 +56,21 @@ from module8_stats import compare_many_metrics, format_mean_sd, summary_table
 
 HIGH_CPRA_SHARE = 0.30
 OOD_INITIAL_POOL = 75
+ALL_CONFIGS = {
+    "static_nsga2_ucb1": {"method": "nsga2", "aos": "ucb1", "clearing": "myopic", "dynamic": False},
+    "static_nsga3_fixed": {"method": "nsga3", "aos": "none", "clearing": "myopic", "dynamic": False},
+    "dyn_nsga3_ucb1_myopic": {"method": "nsga3", "aos": "ucb1", "clearing": "myopic", "dynamic": True},
+    "dyn_nsga3_linucb_myopic": {"method": "nsga3", "aos": "linucb", "clearing": "myopic", "dynamic": True},
+    "dyn_nsga3_ucb1_batched": {"method": "nsga3", "aos": "ucb1", "clearing": "batched", "dynamic": True},
+    "dyn_nsga3_linucb_batched": {"method": "nsga3", "aos": "linucb", "clearing": "batched", "dynamic": True},
+    "myopic_ilp": {"method": "ilp", "clearing": "myopic"},
+    "dickerson_lex": {"method": "lex", "clearing": "myopic"},
+}
+for _n, _c in ALL_CONFIGS.items():
+    _c["name"] = _n
+
+# Default OOD comparison: the central question (myopic vs batched),
+# the AOS comparison, and the two ILP reference points.
 DEFAULT_CONFIGS = [
     {"name": "dyn_nsga3_ucb1_myopic", "method": "nsga3", "aos": "ucb1",
      "clearing": "myopic", "dynamic": True},
@@ -261,10 +276,57 @@ class PrefLibPoolEvolution(PoolEvolution):
 # OOD EXPERIMENT
 # ============================================================
 
-def wmd_files(path: str) -> List[Path]:
-    """A single .wmd file, or every .wmd file in a folder."""
+def instance_size(f: Path) -> int:
+    """Number of vertices (pairs + altruists) of a PrefLib instance."""
+    dat = f.with_suffix(".dat")
+    if dat.exists():
+        return max(0, sum(1 for line in dat.read_text().splitlines() if line.strip()) - 1)
+    return len(load_wmd(str(f)).vertices)
+
+
+def wmd_files(path: str, min_size: int = 0, max_size: int = 10 ** 9,
+              sample: Optional[int] = None, seed: int = 0,
+              per_size: Optional[int] = None) -> List[Path]:
+    """
+    A single .wmd file, or the .wmd files of a folder, optionally
+    filtered by instance size and reduced to a reproducible subset
+    (PrefLib 00036 has ~310 instances):
+      per_size  seeded random choice of this many instances for every
+                distinct instance size (size-stratified, recommended)
+      sample    seeded random choice of this many instances overall
+    """
     p = Path(path)
-    return sorted(p.glob("*.wmd")) if p.is_dir() else [p]
+    if not p.is_dir():
+        return [p]
+    sized = [(f, instance_size(f)) for f in sorted(p.glob("*.wmd"))]
+    sized = [(f, n) for f, n in sized if min_size <= n <= max_size]
+    rng = np.random.default_rng(seed)
+    if per_size is not None:
+        chosen = []
+        for n in sorted({n for _, n in sized}):
+            group = [f for f, m in sized if m == n]
+            k = min(per_size, len(group))
+            idx = sorted(rng.choice(len(group), k, replace=False))
+            chosen += [group[i] for i in idx]
+        files = chosen
+    else:
+        files = [f for f, _ in sized]
+    if sample is not None and sample < len(files):
+        idx = rng.choice(len(files), sample, replace=False)
+        files = [files[i] for i in sorted(idx)]
+    return files
+
+
+def list_instances(path: str) -> pd.DataFrame:
+    """Size table of all instances in a folder (to choose a subset)."""
+    rows = []
+    for f in sorted(Path(path).glob("*.wmd")):
+        g = load_wmd(str(f))
+        rows.append({"file": f.name, "vertices": len(g.vertices),
+                     "altruists": len(g.altruists), "edges": len(g.edges),
+                     "high_cpra": sum(1 for a in g.attributes.values()
+                                      if a.get("cpra", 0) >= CPRA_THRESHOLD)})
+    return pd.DataFrame(rows)
 
 
 def run_preflib_ood(
@@ -279,23 +341,38 @@ def run_preflib_ood(
     selection_rule: str = "floor",
     min_f1_ratio: float = 0.9,
     verbose: bool = False,
+    min_size: int = 0,
+    max_size: int = 10 ** 9,
+    sample: Optional[int] = None,
+    per_size: Optional[int] = None,
+    scale_all: bool = True,
 ) -> pd.DataFrame:
     """
     Run the configurations on one PrefLib file or a folder of
     files. Returns one row per (dataset, config, tau, run, round).
     All configurations of the same run share the arrival order and
     the paired random numbers.
+
+    Instance scaling (scale_all=True, default; same rule for every
+    instance so all are treated alike): half of the instance's
+    vertices form the initial pool, the rest arrive spread over the
+    n_rounds rounds (lambda = remaining / n_rounds), and the batching
+    threshold scales with the pool (n* = 90/75 x initial pool).
+    scale_all=False keeps the ANZKX defaults (pool 75, lambda 10,
+    n* 90) for instances large enough and scales only small ones.
     """
     configs = configs or DEFAULT_CONFIGS
     rows: List[Dict] = []
-    for f in wmd_files(wmd_path):
+    files = wmd_files(wmd_path, min_size, max_size, sample, per_size=per_size)
+    print(f"[OOD] {len(files)} instance(s) selected")
+    for f in files:
         graph = load_wmd(str(f))
         builder = make_graph_builder(graph)
         verts = graph.vertices
         init, lam, n_star = initial_size, lambda_arrivals, BATCH_THRESHOLD
-        if len(verts) < initial_size + n_rounds * lambda_arrivals:
-            # small instance: half the vertices start in the pool, the
-            # rest arrive spread over the rounds (same dynamics, scaled)
+        if scale_all or len(verts) < initial_size + n_rounds * lambda_arrivals:
+            # half the vertices start in the pool, the rest arrive
+            # spread over the rounds (same dynamics, scaled)
             init = max(2, len(verts) // 2)
             lam = max(0.5, (len(verts) - init) / n_rounds)
             # batched threshold scaled like the pool: n* = 90/75 x initial pool
@@ -347,6 +424,10 @@ def summarise_ood(rounds: pd.DataFrame) -> pd.DataFrame:
         out.append({
             "dataset": ds, "config": cfg, "tau": tau, "run": run,
             "run_seed": g["run_seed"].iloc[0],
+            # paired unit = (instance, run): all configurations of the
+            # same instance and run share arrivals and exits
+            "pair_id": f"{ds}|{run}",
+            "n_vertices": int(g["n_vertices"].iloc[0]) if "n_vertices" in g else np.nan,
             "pof_mean": c["PoF"].mean() if len(c) else np.nan,
             "total_transplants": c["F1"].sum() if len(c) else 0,
             "total_high_cpra_transplants": c["high_cpra_matched"].sum() if len(c) else 0,
@@ -392,7 +473,32 @@ if __name__ == "__main__":
     ap.add_argument("--gen", type=int, default=20)
     ap.add_argument("--taus", type=int, nargs="+", default=[12])
     ap.add_argument("--out", default="results/ood")
+    ap.add_argument("--min-size", type=int, default=0,
+                    help="only instances with at least this many vertices")
+    ap.add_argument("--max-size", type=int, default=10 ** 9,
+                    help="only instances with at most this many vertices")
+    ap.add_argument("--per-size", type=int, default=None,
+                    help="size-stratified: this many instances per instance size")
+    ap.add_argument("--sample", type=int, default=None,
+                    help="seeded random sample of this many instances")
+    ap.add_argument("--configs", nargs="+", default=[c["name"] for c in DEFAULT_CONFIGS],
+                    choices=list(ALL_CONFIGS),
+                    help="configurations to run (e.g. only myopic_ilp dickerson_lex "
+                         "to cover all instances cheaply)")
+    ap.add_argument("--list", action="store_true",
+                    help="only print the size table of the instances")
     args = ap.parse_args()
+
+    if args.list and args.wmd:
+        t = list_instances(args.wmd)
+        print(t.to_string(index=False))
+        print(f"\n{len(t)} instances. Instances per size (vertices):")
+        print(t.groupby("vertices").agg(instances=("file", "count"),
+                                        mean_altruists=("altruists", "mean"),
+                                        mean_edges=("edges", "mean"),
+                                        mean_high_cpra=("high_cpra", "mean"))
+                .round(1).to_string())
+        raise SystemExit
 
     print("=" * 62)
     print("MODULE 9: PREFLIB OUT-OF-DISTRIBUTION VALIDATION")
@@ -409,42 +515,76 @@ if __name__ == "__main__":
         print(f"  Modern and legacy layouts parse identically: "
               f"{set(g1.edges) == set(g2.edges) and g1.altruists == g2.altruists}")
 
-    for f in wmd_files(wmd):
+    files = wmd_files(wmd, args.min_size, args.max_size, args.sample,
+                      per_size=args.per_size)
+    sizes = pd.Series([instance_size(f) for f in files])
+    print(f"\nSelected {len(files)} instance(s); sizes: "
+          f"{sizes.value_counts().sort_index().to_dict()}")
+    if Path(wmd).is_dir() and len(files) > 40 and \
+            any(c["method"] in ("nsga3", "nsga2") for c in DEFAULT_CONFIGS
+                if c["name"] in args.configs):
+        print("  NOTE: many instances with NSGA-III configurations is expensive; "
+              "consider --per-size 3 (or run only myopic_ilp dickerson_lex on all).")
+
+    for f in files[:3]:
         g = load_wmd(str(f))
-        print(f"\nFile: {f.name}")
-        print(f"  Vertices: {len(g.vertices)}   altruists: {len(g.altruists)}   "
-              f"edges: {len(g.edges)}   companion data: {bool(g.attributes)}")
         b = make_graph_builder(g)
         pts = list(make_patients(g, 1).values())
         e = b(pts)
         alt_ids = {p.pair_id for p in pts if p.is_altruistic}
+        print(f"\nFile: {f.name}")
+        print(f"  Vertices: {len(g.vertices)}   altruists: {len(g.altruists)}   "
+              f"edges: {len(g.edges)}   companion .dat: {bool(g.attributes)}   "
+              f"high-cPRA: {sum(p.is_highly_sensitised for p in pts)}")
         print(f"  Edges into altruists after building: "
               f"{sum(j in alt_ids for (_, j) in e)}")
 
-    df = run_preflib_ood(wmd, taus=tuple(args.taus), n_runs=args.runs,
-                         n_rounds=args.rounds, n_gen=args.gen)
+    configs = [ALL_CONFIGS[n] for n in args.configs]
+    df = run_preflib_ood(wmd, configs=configs, taus=tuple(args.taus),
+                         n_runs=args.runs, n_rounds=args.rounds, n_gen=args.gen,
+                         min_size=args.min_size, max_size=args.max_size,
+                         sample=args.sample, per_size=args.per_size)
     df.to_csv(out / "ood_rounds.csv", index=False)
     runs = summarise_ood(df)
     runs.to_csv(out / "ood_runs.csv", index=False)
 
-    tab = summary_table(runs, ["pof_mean", "total_transplants",
-                               "total_high_cpra_transplants", "mean_F3"])
-    for m in ("pof_mean", "total_transplants", "total_high_cpra_transplants"):
-        tab[m] = format_mean_sd(tab, m)
-    print("\n--- OOD results (mean ± sd over runs) ---")
-    print(tab[["config", "tau", "pof_mean", "total_transplants",
-               "total_high_cpra_transplants"]].to_string(index=False))
+    metrics = ["pof_mean", "total_transplants", "total_high_cpra_transplants", "mean_F3"]
+    tab = summary_table(runs, metrics)
+    for m in metrics:
+        tab[m] = format_mean_sd(tab, m, 3 if m == "mean_F3" else 2)
+    print("\n--- OOD results over all selected instances (mean ± sd) ---")
+    print(tab[["config", "tau"] + metrics].to_string(index=False))
+    tab.to_csv(out / "ood_table_overall.csv", index=False)
+
+    if runs["n_vertices"].nunique() > 1:
+        by_size = summary_table(runs, ["pof_mean", "total_transplants"],
+                                by=("n_vertices", "config"))
+        by_size.to_csv(out / "ood_table_by_size.csv", index=False)
+        print("\n--- By instance size (mean PoF %) ---")
+        print(by_size.pivot(index="n_vertices", columns="config",
+                            values="pof_mean_mean").round(2).to_string())
 
     ilp_ok = all((df.loc[df["cleared"], "F1"] <= df.loc[df["cleared"], "F1_ILP"] + 1e-9))
     print(f"\n  No configuration exceeds the ILP ceiling: {ilp_ok}")
-    if args.runs >= 2:
-        st = compare_many_metrics(runs, ["total_transplants"],
-                                  [("dyn_nsga3_ucb1_myopic", "dyn_nsga3_ucb1_batched")])
-        if len(st):
-            r = st.iloc[0]
-            print(f"  Myopic vs batched transplants: {r['mean_a']:.1f} vs "
-                  f"{r['mean_b']:.1f} (Wilcoxon needs >= 6 runs for significance)")
-    print(f"\nSaved: {out / 'ood_rounds.csv'}, {out / 'ood_runs.csv'}")
+
+    comps = [c for c in [("dyn_nsga3_ucb1_myopic", "dyn_nsga3_ucb1_batched"),
+                         ("dyn_nsga3_ucb1_myopic", "dyn_nsga3_linucb_myopic"),
+                         ("dyn_nsga3_ucb1_myopic", "dickerson_lex")]
+             if set(c) <= set(args.configs)]
+    if comps and runs["pair_id"].nunique() >= 2:
+        st = compare_many_metrics(runs, ["pof_mean", "total_transplants",
+                                         "total_high_cpra_transplants"],
+                                  comps, pair_col="pair_id")
+        st.to_csv(out / "ood_wilcoxon.csv", index=False)
+        print("\n--- Paired Wilcoxon (unit = instance x run, Bonferroni) ---")
+        print(st[["tau", "metric", "config_a", "config_b", "n", "mean_a", "mean_b",
+                  "p_bonferroni", "significant", "cohens_d", "effect"]]
+              .round(4).to_string(index=False))
+        if runs["pair_id"].nunique() < 6:
+            print("  (fewer than 6 paired units: significance is not reachable yet)")
+    print(f"\nSaved in {out}/: ood_rounds.csv, ood_runs.csv, ood_table_overall.csv"
+          f"{', ood_table_by_size.csv' if runs['n_vertices'].nunique() > 1 else ''}"
+          f"{', ood_wilcoxon.csv' if comps else ''}")
 
     print("\n" + "=" * 62)
     print("MODULE 9 COMPLETE")
