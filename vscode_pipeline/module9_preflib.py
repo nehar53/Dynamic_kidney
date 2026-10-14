@@ -558,7 +558,10 @@ def write_synthetic_wmd(path: str, n: int = 160, p_edge: float = 0.06,
 # TEST / COMMAND LINE
 # ============================================================
 
-if __name__ == "__main__":
+def main_cli(argv: Optional[List[str]] = None) -> None:
+    """Command line: python module9_preflib.py --wmd <folder> --preset main"""
+    import sys
+    argv = sys.argv[1:] if argv is None else list(argv)
 
     ap = argparse.ArgumentParser(description="PrefLib OOD validation (Section 4.6)")
     ap.add_argument("--wmd", default=None,
@@ -588,11 +591,10 @@ if __name__ == "__main__":
                     help="ready-made run: test | main | ilp | small")
     ap.add_argument("--allow-large", action="store_true",
                     help="do not skip instances above the size limits")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     if args.preset:
-        import sys
-        given = {a.split("=")[0] for a in sys.argv[1:] if a.startswith("--")}
+        given = {a.split("=")[0] for a in argv if a.startswith("--")}
         flag = {"min_size": "--min-size", "max_size": "--max-size",
                 "per_size": "--per-size", "runs": "--runs", "rounds": "--rounds",
                 "gen": "--gen", "configs": "--configs", "out": "--out"}
@@ -622,7 +624,7 @@ if __name__ == "__main__":
                                         mean_edges=("edges", "mean"),
                                         mean_high_cpra=("high_cpra", "mean"))
                 .round(1).to_string())
-        raise SystemExit
+        return
 
     print("=" * 62)
     print("MODULE 9: PREFLIB OUT-OF-DISTRIBUTION VALIDATION")
@@ -717,3 +719,36 @@ if __name__ == "__main__":
     print("MODULE 9 COMPLETE")
     print("Ready for Module 10: Full Experiment")
     print("=" * 62)
+
+
+# ============================================================
+# RUN SETTINGS (used when you press Run / run with no arguments)
+# ============================================================
+# Folder with the PrefLib 00036 .wmd and .dat files, next to this
+# file (or a full path, e.g. r"C:\Users\lenovo\...\preflib00036").
+DATA_FOLDER = "preflib00036"
+# Runs in this order. Each is resumable: stop at any time, run the
+# file again and it continues where it stopped.
+#   "test"  ~5 min check            "ilp"   ILP baselines, all sizes <= 294 (<1 h)
+#   "main"  main OOD comparison, 12 instances x 10 runs (long: ~15-30 h on 4 cores)
+#   "small" optional small pools
+RUN_PRESETS = ["ilp", "main"]
+# Parallel processes: all CPU cores but one
+JOBS = max(1, (os.cpu_count() or 2) - 1)
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1:                      # command-line use
+        main_cli()
+    else:                                      # pressed Run in VS Code
+        folder = Path(DATA_FOLDER)
+        if not folder.is_absolute():
+            folder = Path(__file__).resolve().parent / folder
+        if not folder.is_dir():
+            raise SystemExit(f"PrefLib folder not found: {folder}\n"
+                             f"Set DATA_FOLDER near the end of module9_preflib.py.")
+        print(f"Data: {folder}   presets: {RUN_PRESETS}   jobs: {JOBS}")
+        for preset in RUN_PRESETS:
+            main_cli(["--wmd", str(folder), "--preset", preset,
+                      "--jobs", str(JOBS)])
