@@ -1,8 +1,16 @@
+import os
+
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_v, "1")   # parallel over trajectories, not BLAS
+
 import argparse
 import copy
 import csv
 import re
+import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from multiprocessing import get_context
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
@@ -351,6 +359,55 @@ def list_instances(path: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _ood_trajectory(task: Dict) -> List[Dict]:
+    """One (instance, config, tau, run) trajectory. Top-level so that
+    it can run in a worker process (spawn on Windows)."""
+    graph = load_wmd(task["file"])
+    builder = make_graph_builder(graph)
+    verts = graph.vertices
+    cfg, tau, run, init = task["cfg"], task["tau"], task["run"], task["init"]
+    seed = 1000 + run
+    base = make_patients(graph, seed)
+    order = [int(v) for v in np.random.default_rng(seed).permutation(verts)]
+    pts = [copy.deepcopy(base[v]) for v in order]
+    w_rng = np.random.default_rng([seed, 11])
+    for p in pts[:init]:                      # spread initial waits
+        p.waiting_time = int(w_rng.integers(0, 6))
+    pool = Pool(pairs=pts[:init], round_number=0)
+    queue = pts[init:]
+
+    def factory(pool, next_id, tau):
+        return PrefLibPoolEvolution(pool, next_id, tau_months=tau,
+                                    lambda_arrivals=task["lam"], seed=seed,
+                                    queue=queue)
+
+    traj = simulate_trajectory(
+        cfg, tau, seed, n_rounds=task["n_rounds"], n_gen=task["n_gen"],
+        selection_rule=task["selection_rule"],
+        min_f1_ratio=task["min_f1_ratio"],
+        batch_threshold=task["n_star"],
+        graph_builder=builder,
+        initial_pool=(pool, max(verts) + 1),
+        evolution_factory=factory, verbose=task["verbose"])
+    name = Path(task["file"]).name
+    for r in traj:
+        r["dataset"] = name
+        r["n_vertices"] = len(verts)
+        r["run"] = run
+    return traj
+
+
+def _ood_task(task: Dict) -> Tuple[str, float]:
+    """Worker: run one trajectory and save it (atomic write)."""
+    t0 = time.time()
+    df = pd.DataFrame(_ood_trajectory(task))
+    path = Path(task["path"])
+    tmp = path.with_suffix(".tmp")
+    df.to_csv(tmp, index=False)
+    tmp.replace(path)
+    return str(path), time.time() - t0
+
+
 def run_preflib_ood(
     wmd_path: str,
     configs: Optional[List[Dict]] = None,
@@ -368,6 +425,8 @@ def run_preflib_ood(
     sample: Optional[int] = None,
     per_size: Optional[int] = None,
     scale_all: bool = True,
+    raw_dir: Optional[str] = None,
+    jobs: int = 1,
 ) -> pd.DataFrame:
     """
     Run the configurations on one PrefLib file or a folder of
@@ -382,60 +441,74 @@ def run_preflib_ood(
     threshold scales with the pool (n* = 90/75 x initial pool).
     scale_all=False keeps the ANZKX defaults (pool 75, lambda 10,
     n* 90) for instances large enough and scales only small ones.
+
+    raw_dir: save every trajectory to raw_dir as soon as it finishes
+    and skip trajectories already saved (resumable). jobs > 1 runs
+    trajectories in parallel processes (needs raw_dir).
     """
     configs = configs or DEFAULT_CONFIGS
-    rows: List[Dict] = []
     files = wmd_files(wmd_path, min_size, max_size, sample, per_size=per_size)
     print(f"[OOD] {len(files)} instance(s) selected")
+    tasks: List[Dict] = []
     for f in files:
-        graph = load_wmd(str(f))
-        builder = make_graph_builder(graph)
-        verts = graph.vertices
+        n = instance_size(f)
         init, lam, n_star = initial_size, lambda_arrivals, BATCH_THRESHOLD
-        if scale_all or len(verts) < initial_size + n_rounds * lambda_arrivals:
+        if scale_all or n < initial_size + n_rounds * lambda_arrivals:
             # half the vertices start in the pool, the rest arrive
             # spread over the rounds (same dynamics, scaled)
-            init = max(2, len(verts) // 2)
-            lam = max(0.5, (len(verts) - init) / n_rounds)
+            init = max(2, n // 2)
+            lam = max(0.5, (n - init) / n_rounds)
             # batched threshold scaled like the pool: n* = 90/75 x initial pool
             n_star = max(3, int(round(BATCH_THRESHOLD / initial_size * init)))
-            print(f"[OOD] {f.name}: {len(verts)} vertices -> initial pool {init}, "
+            print(f"[OOD] {f.name}: {n} vertices -> initial pool {init}, "
                   f"lambda {lam:.2f}/round, n* {n_star} (scaled to the instance)")
         for tau in taus:
             for run in range(n_runs):
-                seed = 1000 + run
-                base = make_patients(graph, seed)
-                order = [int(v) for v in np.random.default_rng(seed).permutation(verts)]
                 for cfg in configs:
-                    pts = [copy.deepcopy(base[v]) for v in order]
-                    w_rng = np.random.default_rng([seed, 11])
-                    for p in pts[:init]:                      # spread initial waits
-                        p.waiting_time = int(w_rng.integers(0, 6))
-                    pool = Pool(pairs=pts[:init], round_number=0)
-                    queue = pts[init:]
+                    path = (Path(raw_dir) / f"{f.stem}__{cfg['name']}__tau{tau}"
+                            f"__run{run:03d}.csv") if raw_dir else None
+                    tasks.append({
+                        "file": str(f), "cfg": cfg, "tau": tau, "run": run,
+                        "init": init, "lam": lam, "n_star": n_star,
+                        "n_rounds": n_rounds, "n_gen": n_gen,
+                        "selection_rule": selection_rule,
+                        "min_f1_ratio": min_f1_ratio, "verbose": verbose,
+                        "path": str(path) if path else None})
 
-                    def factory(pool, next_id, tau, queue=queue, seed=seed):
-                        return PrefLibPoolEvolution(
-                            pool, next_id, tau_months=tau,
-                            lambda_arrivals=lam, seed=seed,
-                            queue=queue)
+    def label(t):
+        return f"{Path(t['file']).name} {t['cfg']['name']} tau={t['tau']} run={t['run']}"
 
-                    traj = simulate_trajectory(
-                        cfg, tau, seed, n_rounds=n_rounds, n_gen=n_gen,
-                        selection_rule=selection_rule,
-                        min_f1_ratio=min_f1_ratio,
-                        batch_threshold=n_star,
-                        graph_builder=builder,
-                        initial_pool=(pool, max(verts) + 1),
-                        evolution_factory=factory, verbose=verbose)
-                    for r in traj:
-                        r["dataset"] = f.name
-                        r["n_vertices"] = len(verts)
-                        r["run"] = run
-                    rows.extend(traj)
-                    print(f"[OOD] {f.name} {cfg['name']} tau={tau} run={run} done",
-                          flush=True)
-    return pd.DataFrame(rows)
+    if raw_dir is None:                      # in memory, serial (self-test)
+        rows: List[Dict] = []
+        for t in tasks:
+            rows.extend(_ood_trajectory(t))
+            print(f"[OOD] {label(t)} done", flush=True)
+        return pd.DataFrame(rows)
+
+    Path(raw_dir).mkdir(parents=True, exist_ok=True)
+    todo = [t for t in tasks if not Path(t["path"]).exists()]
+    # ILP baselines first (seconds), then the MOEA trajectories
+    todo.sort(key=lambda t: t["cfg"]["method"] in ("nsga3", "nsga2"))
+    print(f"[OOD] trajectories: {len(tasks) - len(todo)}/{len(tasks)} already "
+          f"saved, {len(todo)} to run on {jobs} process(es)")
+    t0 = time.time()
+
+    def report(k, t, secs):
+        print(f"[OOD] [{k}/{len(todo)}] {label(t)} done in {secs:.0f}s  "
+              f"(elapsed {(time.time() - t0) / 60:.1f} min)", flush=True)
+
+    if jobs > 1 and todo:
+        with ProcessPoolExecutor(max_workers=jobs,
+                                 mp_context=get_context("spawn")) as ex:
+            futures = {ex.submit(_ood_task, t): t for t in todo}
+            for k, fut in enumerate(as_completed(futures), 1):
+                _, secs = fut.result()
+                report(k, futures[fut], secs)
+    else:
+        for k, t in enumerate(todo, 1):
+            _, secs = _ood_task(t)
+            report(k, t, secs)
+    return pd.concat([pd.read_csv(t["path"]) for t in tasks], ignore_index=True)
 
 
 def summarise_ood(rounds: pd.DataFrame) -> pd.DataFrame:
@@ -509,6 +582,8 @@ if __name__ == "__main__":
                          "to cover all instances cheaply)")
     ap.add_argument("--list", action="store_true",
                     help="only print the size table of the instances")
+    ap.add_argument("--jobs", type=int, default=1,
+                    help="parallel processes (about the number of CPU cores)")
     ap.add_argument("--preset", choices=list(PRESETS),
                     help="ready-made run: test | main | ilp | small")
     ap.add_argument("--allow-large", action="store_true",
@@ -592,7 +667,10 @@ if __name__ == "__main__":
     df = run_preflib_ood(wmd, configs=configs, taus=tuple(args.taus),
                          n_runs=args.runs, n_rounds=args.rounds, n_gen=args.gen,
                          min_size=args.min_size, max_size=args.max_size,
-                         sample=args.sample, per_size=args.per_size)
+                         sample=args.sample, per_size=args.per_size,
+                         raw_dir=(str(out / "raw") if args.wmd else None),
+                         jobs=args.jobs)
+    df["cleared"] = df["cleared"].astype(bool)
     df.to_csv(out / "ood_rounds.csv", index=False)
     runs = summarise_ood(df)
     runs.to_csv(out / "ood_runs.csv", index=False)
