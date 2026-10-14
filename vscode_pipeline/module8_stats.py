@@ -220,6 +220,11 @@ def compare_configs(
     out = pd.DataFrame(rows)
     if out.empty:
         return out
+    for col in ("mean_a", "sd_a", "mean_b", "sd_b", "mean_diff", "ci95_low",
+                "ci95_high", "hl_median_diff", "cohens_d", "effect",
+                "rank_biserial"):
+        if col not in out:              # every comparison had no data
+            out[col] = np.nan
     valid = out["p"].notna()
     out["p_bonferroni"] = np.nan
     out["p_holm"] = np.nan

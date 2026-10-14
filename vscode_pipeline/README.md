@@ -45,60 +45,68 @@ python module8_stats.py            # Wilcoxon/Bonferroni/Cohen's d on toy data  
 python module9_preflib.py          # self-test on a synthetic .wmd file         (~1 min)
 ```
 
-Then run the experiment in three steps:
+Then run module 10 (experiments of concept note Section 4) in stages:
 
 ```bash
-# 1. Quick test of the whole pipeline (~30 s)
+# 1. Quick test of the whole pipeline (~1 min on 4 cores)
 python module10_experiment.py --quick --jobs 4
 
-# 2. Pilot: 10 runs (~35 min on 8 cores)
-python module10_experiment.py --runs 10 --jobs 8
+# 2. Pilot: 5 runs at the full budget (N=100, G=150) -> real timing
+python module10_experiment.py --pilot --jobs 4
 
-# 3. Full design: 100 runs. Finished runs are kept, so this continues from the pilot.
-python module10_experiment.py --jobs 8
+# 3. Main design: 8 baselines x tau {6,12,18} x 100 runs x 25 rounds
+python module10_experiment.py --jobs 4
+
+# 4. Sensitivity and scalability (reuse the base runs of step 3)
+python module10_experiment.py --experiment sensitivity --jobs 4
+python module10_experiment.py --experiment scalability --jobs 4
+
+# Tables and figures again, at any time (also while runs are missing)
+python module10_experiment.py --analyse-only --experiment all
 ```
 
-`--jobs` is the number of CPU cores to use. Timing: one 25-round trajectory
-with 150 generations takes about 80 s, so the full design (1,800 MOEA
-trajectories) is about 40 CPU-hours.
+| Experiment | What varies | Runs |
+|---|---|---|
+| `main` | 8 baselines x tau 6/12/18 | 100 |
+| `sens_select` | implemented solution: 90 % floor / 80 % floor / compromise | 30 |
+| `sens_cit` | CIT limit 24 / 16 / 12 h | 30 |
+| `sens_batch` | batched clearing with a 3-round maximum interval | 30 |
+| `sens_mud` | mu_d 0.01 / 0.02 / 0.04, high-cPRA exits at 0.3 mu_d | 30 |
+| `scalability` | initial pool 200 (500, 1000 with `--allow-large`) | 10 |
+
+**Runtime.** An NSGA round at the full budget takes 8–60 s (it grows with
+the pool), so one 25-round MOEA trajectory takes about 10–20 min and the
+main design (1,800 MOEA trajectories) needs several hundred CPU-hours. Use
+`--jobs` (about the number of cores), the `--pilot` timing, and if possible
+several computers with `--shard 1/3`, `--shard 2/3`, `--shard 3/3` and the
+same `--out` folder copied together afterwards.
 
 **Resumable.** Each trajectory is saved to `results/raw/` as soon as it
-finishes. If the run stops, start the same command again.
+finishes. Ctrl+C at any time and re-run the same command.
+`results/manifest.json` records the budget and package versions; one
+folder holds one budget.
 
-Once all runs are done, redo the statistics and figures only:
-
-```bash
-python module10_experiment.py --analyse-only
-```
-
-PrefLib validation on the real data. Download the 00036 `.wmd` files from
-preflib.org first.
-
-```bash
-python module9_preflib.py --wmd 00036-00000001.wmd --runs 10 --rounds 25 --gen 150
-```
+PrefLib validation: see module 9 (`python module9_preflib.py --preset test`).
 
 ## Outputs (`results/`)
 
 | File | Use in the paper |
 |---|---|
-| `table_main_results.csv` | Main table: mean ± sd of PoF, transplants, high-cPRA transplants, F2–F4, HV and more, per baseline and τ |
-| `table_wilcoxon.csv` | Paired Wilcoxon, Bonferroni-adjusted p, Cohen's d and effect label |
-| `table_pof_trajectory.csv` | Central question: PoF_t per round, myopic vs batched, UCB1 vs LinUCB |
-| `figures/trajectory_PoF.png` | Main figure: PoF trajectory (mean ± 95 % CI), one panel per τ |
-| `figures/trajectory_F3.png`, `_F4`, `_HV`, `_n_high_cpra`, `_pool_size` | Supporting figures |
-| `figures/aos_arm_selection.png` | Which mutation rate UCB1 or LinUCB chose in each round |
-| `rounds.csv`, `runs.csv` | All raw data |
+| `table_main_results.csv` / `.tex` | Main table: mean ± sd of PoF, Var PoF, transplants, high-cPRA transplants, F2–F4, HV, high-cPRA patients lost |
+| `table_friedman.csv` | Friedman omnibus test and mean ranks per metric and tau |
+| `table_wilcoxon.csv` | Paired Wilcoxon, Bonferroni and Holm p, Cohen's d, rank-biserial, bootstrap CI |
+| `table_pof_trend.csv` | Slope of PoF_t over rounds per run, tested against 0 |
+| `table_pof_trajectory.csv` | PoF_t per round, myopic vs batched, UCB1 vs LinUCB |
+| `table_arm_distribution.csv` | Share of generations per mutation rate (AOS) |
+| `table_sens_*.csv`, `table_scalability.csv` | Sensitivity and scalability |
+| `figures/trajectory_*.png` | PoF_t, F2, F3, F4, HV, pool, high-cPRA, cumulative transplants (mean ± 95 % CI) |
+| `figures/clearing_myopic_vs_batched.png` | Central question: pi_M vs pi_B |
+| `figures/pof_mean_boxplot.png`, `aos_arm_selection.png`, `sens_*.png` | Supporting figures |
+| `summary.md`, `rounds.csv`, `runs.csv` | Summary and all raw data |
 
-## Options for the paper (module 10 flags)
-
-| Flag | Default | Meaning |
-|---|---|---|
-| `--selection` | `floor` | Which Pareto solution is implemented each round (see issue A) |
-| `--min-f1-ratio` | `0.9` | Efficiency floor for `floor`: F1 ≥ 90 % of the front's best |
-| `--batch-max-interval` | none | π_B also clears after k rounds without a clearing (see issue C) |
-| `--initial-wait-max` | `6` | Spreads initial waiting times (see issue D); `0` keeps module 1 as it is |
-| `--taus`, `--runs`, `--rounds`, `--gen`, `--configs` | 6 12 18 / 100 / 25 / 150 / all 8 | Experiment size |
+`pof_vs_myopic_ilp` in `runs.csv` = 1 − transplants / myopic-ILP transplants
+on the same pool sequence: a trajectory-level loss that, unlike PoF_t, is
+comparable between myopic and batched clearing.
 
 ---
 
