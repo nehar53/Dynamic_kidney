@@ -56,6 +56,28 @@ from module8_stats import compare_many_metrics, format_mean_sd, summary_table
 
 HIGH_CPRA_SHARE = 0.30
 OOD_INITIAL_POOL = 75
+# Exhaustive cycle enumeration becomes intractable on the largest
+# PrefLib 00036 instances (512+ vertices: millions of 3-cycles).
+MAX_SIZE_MOEA = 147      # NSGA-III configurations (pool <= 73)
+MAX_SIZE_ILP = 294       # ILP baselines
+
+# Ready-made runs for PrefLib 00036 (293 instances, base sizes
+# 16..2048 with 0/5/10/15% extra altruists). Explicit flags given on
+# the command line override the preset values.
+PRESETS = {
+    # ~5 min: check that everything works on the real files
+    "test":  dict(min_size=128, max_size=147, per_size=1, runs=2, rounds=6, gen=20,
+                  configs=None, out="results/ood_test"),
+    # main OOD comparison: ANZKX-sized pools (64-73 after scaling)
+    "main":  dict(min_size=128, max_size=147, per_size=3, runs=10, rounds=25, gen=150,
+                  configs=None, out="results/ood_main"),
+    # robustness across instance sizes, ILP baselines only (fast)
+    "ilp":   dict(min_size=0, max_size=294, per_size=None, runs=10, rounds=25, gen=150,
+                  configs=["myopic_ilp", "dickerson_lex"], out="results/ood_ilp_sizes"),
+    # optional small-pool check with NSGA-III (pools 32-37)
+    "small": dict(min_size=64, max_size=73, per_size=2, runs=10, rounds=25, gen=150,
+                  configs=None, out="results/ood_small"),
+}
 ALL_CONFIGS = {
     "static_nsga2_ucb1": {"method": "nsga2", "aos": "ucb1", "clearing": "myopic", "dynamic": False},
     "static_nsga3_fixed": {"method": "nsga3", "aos": "none", "clearing": "myopic", "dynamic": False},
@@ -487,7 +509,34 @@ if __name__ == "__main__":
                          "to cover all instances cheaply)")
     ap.add_argument("--list", action="store_true",
                     help="only print the size table of the instances")
+    ap.add_argument("--preset", choices=list(PRESETS),
+                    help="ready-made run: test | main | ilp | small")
+    ap.add_argument("--allow-large", action="store_true",
+                    help="do not skip instances above the size limits")
     args = ap.parse_args()
+
+    if args.preset:
+        import sys
+        given = {a.split("=")[0] for a in sys.argv[1:] if a.startswith("--")}
+        flag = {"min_size": "--min-size", "max_size": "--max-size",
+                "per_size": "--per-size", "runs": "--runs", "rounds": "--rounds",
+                "gen": "--gen", "configs": "--configs", "out": "--out"}
+        for key, value in PRESETS[args.preset].items():
+            if flag[key] not in given and value is not None:
+                setattr(args, key, value)
+        print(f"Preset '{args.preset}': sizes {args.min_size}-{args.max_size}, "
+              f"per-size {args.per_size}, runs {args.runs}, rounds {args.rounds}, "
+              f"gen {args.gen}, configs {args.configs}, out {args.out}")
+
+    if not args.allow_large:
+        uses_moea = any(ALL_CONFIGS[n]["method"] in ("nsga3", "nsga2")
+                        for n in args.configs)
+        limit = MAX_SIZE_MOEA if uses_moea else MAX_SIZE_ILP
+        if args.max_size > limit:
+            print(f"Size guard: instances above {limit} vertices are skipped "
+                  f"({'NSGA-III' if uses_moea else 'ILP'} would be intractable); "
+                  f"use --allow-large to override.")
+            args.max_size = limit
 
     if args.list and args.wmd:
         t = list_instances(args.wmd)
