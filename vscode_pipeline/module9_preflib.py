@@ -83,6 +83,13 @@ PRESETS = {
     "ilp":   dict(min_size=0, max_size=294, per_size=None, runs=10, rounds=25, gen=150,
                   configs=["myopic_ilp", "dickerson_lex"], out="results/ood_ilp_sizes"),
     # optional small-pool check with NSGA-III (pools 32-37)
+    # batched clearing with a 3-round maximum interval. Reuses the saved
+    # myopic / ILP / Dickerson runs of "main" (same folder) and runs only
+    # the new batched configuration.
+    "batched": dict(min_size=128, max_size=147, per_size=3, runs=10, rounds=25, gen=150,
+                    configs=["dyn_nsga3_ucb1_myopic", "dyn_nsga3_linucb_myopic",
+                             "dyn_nsga3_ucb1_batched_mi3", "myopic_ilp", "dickerson_lex"],
+                    out="results/ood_main"),
     "small": dict(min_size=64, max_size=73, per_size=2, runs=10, rounds=25, gen=150,
                   configs=None, out="results/ood_small"),
 }
@@ -93,6 +100,11 @@ ALL_CONFIGS = {
     "dyn_nsga3_linucb_myopic": {"method": "nsga3", "aos": "linucb", "clearing": "myopic", "dynamic": True},
     "dyn_nsga3_ucb1_batched": {"method": "nsga3", "aos": "ucb1", "clearing": "batched", "dynamic": True},
     "dyn_nsga3_linucb_batched": {"method": "nsga3", "aos": "linucb", "clearing": "batched", "dynamic": True},
+    # batched with a 3-round maximum interval: clear when the pool reaches
+    # n* OR 3 rounds after the last clearing. Needed on PrefLib, where an
+    # instance has only ~3 arrivals per round and rarely reaches n*.
+    "dyn_nsga3_ucb1_batched_mi3": {"method": "nsga3", "aos": "ucb1", "clearing": "batched",
+                                   "dynamic": True, "batch_max_interval": 3},
     "myopic_ilp": {"method": "ilp", "clearing": "myopic"},
     "dickerson_lex": {"method": "lex", "clearing": "myopic"},
 }
@@ -386,6 +398,7 @@ def _ood_trajectory(task: Dict) -> List[Dict]:
         selection_rule=task["selection_rule"],
         min_f1_ratio=task["min_f1_ratio"],
         batch_threshold=task["n_star"],
+        batch_max_interval=cfg.get("batch_max_interval"),
         graph_builder=builder,
         initial_pool=(pool, max(verts) + 1),
         evolution_factory=factory, verbose=task["verbose"])
@@ -697,6 +710,7 @@ def main_cli(argv: Optional[List[str]] = None) -> None:
     print(f"\n  No configuration exceeds the ILP ceiling: {ilp_ok}")
 
     comps = [c for c in [("dyn_nsga3_ucb1_myopic", "dyn_nsga3_ucb1_batched"),
+                         ("dyn_nsga3_ucb1_myopic", "dyn_nsga3_ucb1_batched_mi3"),
                          ("dyn_nsga3_ucb1_myopic", "dyn_nsga3_linucb_myopic"),
                          ("dyn_nsga3_ucb1_myopic", "dickerson_lex")]
              if set(c) <= set(args.configs)]
@@ -731,8 +745,9 @@ DATA_FOLDER = "preflib00036"
 # file again and it continues where it stopped.
 #   "test"  ~5 min check            "ilp"   ILP baselines, all sizes <= 294 (<1 h)
 #   "main"  main OOD comparison, 12 instances x 10 runs (long: ~15-30 h on 4 cores)
+#   "batched" batched clearing with a 3-round maximum interval (reuses "main")
 #   "small" optional small pools
-RUN_PRESETS = ["ilp", "main"]
+RUN_PRESETS = ["batched"]          # "ilp" and "main" are finished
 # Parallel processes: all CPU cores but one
 JOBS = max(1, (os.cpu_count() or 2) - 1)
 
