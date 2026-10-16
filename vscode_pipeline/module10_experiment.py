@@ -204,6 +204,9 @@ SENSITIVITY = ["sens_select", "sens_cit", "sens_batch", "sens_mud"]
 # 50-70 patient pool on one core (measured ~6-15 s after the module 5
 # speed-up; small rounds are solved exactly in < 1 s). Planning only.
 SEC_PER_MOEA_ROUND = 12.0
+
+# Parallel processes when --jobs is not given: all CPU cores but one
+DEFAULT_JOBS = max(1, (os.cpu_count() or 2) - 1)
 SEC_PER_ILP_ROUND = 0.1
 
 
@@ -1004,8 +1007,8 @@ def parse_args(argv=None):
     ap.add_argument("--configs", nargs="+", default=list(BASELINES),
                     choices=list(BASELINES))
     ap.add_argument("--initial-wait-max", type=int, default=INITIAL_WAIT_MAX)
-    ap.add_argument("--jobs", type=int, default=1,
-                    help="parallel processes (about the number of CPU cores)")
+    ap.add_argument("--jobs", type=int, default=DEFAULT_JOBS,
+                    help="parallel processes (default: all CPU cores but one)")
     ap.add_argument("--shard", default=None,
                     help="i/k: run only every k-th trajectory starting at i "
                          "(split one experiment over k computers)")
@@ -1072,5 +1075,20 @@ def main(argv=None) -> None:
     print("=" * 66)
 
 
+# ============================================================
+# RUN SETTINGS (used when you press Run / run with no arguments)
+# ============================================================
+# Which experiments to run, in order. Each is resumable: stop at any
+# time (Ctrl+C or close the terminal), press Run again and it
+# continues. Results so far can be analysed at any time by adding
+# "--analyse-only" to RUN_ARGS.
+#   ["--experiment", "main"]          8 baselines x tau 6/12/18 x 100 runs
+#   ["--experiment", "sensitivity"]   selection rule, CIT, batching, mu_d
+#   ["--experiment", "scalability"]   pools of 200 vertices
+#   ["--experiment", "all"]           everything above
+#   ["--quick"]                       1-minute test of the whole pipeline
+RUN_ARGS = ["--experiment", "main"]
+
+
 if __name__ == "__main__":
-    main()
+    main(None if len(sys.argv) > 1 else RUN_ARGS)
