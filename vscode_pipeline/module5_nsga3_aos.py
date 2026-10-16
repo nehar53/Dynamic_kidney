@@ -84,6 +84,16 @@ N_SCALE = 150.0                # pool size scaling for the context
 
 HV_REF_POINT = np.full(4, 1.1)  # normalised objectives are in [0, 1]
 
+# --- Speed (results unchanged or exact) ---
+# Rounds whose WHOLE feasible set has at most EXACT_MAX_PACKINGS
+# matchings (sets of disjoint cycles/chains, empty one included)
+# are solved by enumerating every matching: the front is the exact
+# Pareto front. With so few solutions NSGA-III cannot even fill a
+# population of N distinct individuals (an 8-pair pool took ~65 s),
+# and the AOS has nothing to adapt, so it is not invoked.
+EXACT_MAX_PACKINGS = 2 * N_POPULATION
+REPAIR_CACHE_MAX = 500_000
+
 # Backwards-compatible names
 N_REF_DIRS = N_REF_PARTITIONS
 UCB1_C = 1.0
@@ -264,23 +274,48 @@ class StructureRepair:
                                          -structures.weight[k], k))
         self.rank = np.empty(len(self.nodes), dtype=np.int64)
         self.rank[priority] = np.arange(len(self.nodes))
+        # repair is deterministic and idempotent (repair(repair(x)) ==
+        # repair(x)), so results are cached: identical output, and the
+        # second repair inside _evaluate becomes free.
+        self._cache: Dict[bytes, Tuple[np.ndarray, List[int]]] = {}
+        # node lists padded with a dummy node n (never used) for the
+        # vectorised greedy below
+        width = max((len(t) for t in self.nodes), default=1)
+        self.pad = np.full((len(self.nodes), width), self.n, dtype=np.int64)
+        for k, t in enumerate(self.nodes):
+            self.pad[k, :len(t)] = t
 
     def repair(self, x: np.ndarray) -> Tuple[np.ndarray, List[int]]:
         """Returns (matched node mask, chosen structure indices)."""
         if len(self.nodes) == 0:
             return np.zeros(self.n, dtype=bool), []
+        x = np.asarray(x, dtype=bool)
+        key = x.tobytes()
+        hit = self._cache.get(key)
+        if hit is not None:
+            return hit
         cnt = self.A @ x.astype(np.int32)
         feas = np.flatnonzero(cnt == self.lens)
         feas = feas[np.argsort(self.rank[feas])]
-        used = [False] * self.n
+        # Greedy in priority order: take the first remaining structure,
+        # drop every remaining one that shares a node with it, repeat.
+        # Same result as the sequential scan, vectorised per pick.
+        used = np.zeros(self.n + 1, dtype=bool)
         chosen = []
-        for k in feas:
-            nodes = self.nodes[k]
-            if not any(used[v] for v in nodes):
-                for v in nodes:
-                    used[v] = True
-                chosen.append(int(k))
-        return np.array(used, dtype=bool), chosen
+        rem = feas
+        while len(rem):
+            k = rem[0]
+            used[self.pad[k]] = True
+            used[self.n] = False
+            chosen.append(int(k))
+            rem = rem[1:]
+            if len(rem):
+                rem = rem[~used[self.pad[rem]].any(axis=1)]
+        result = (used[:self.n].copy(), chosen)
+        if len(self._cache) < REPAIR_CACHE_MAX:
+            self._cache[key] = result
+            self._cache[result[0].tobytes()] = result    # idempotent
+        return result
 
     def matched_ids(self, x: np.ndarray) -> Set[int]:
         mask, _ = self.repair(x)
@@ -402,21 +437,116 @@ class ParetoArchive:
     def __init__(self):
         self.X = None
         self.F = None
+        self._keys: Set[bytes] = set()
 
     def update(self, X: np.ndarray, F: np.ndarray) -> None:
+        """
+        Add new solutions and keep only the non-dominated, unique ones.
+        Same set and order as filtering [archive; new] from scratch, but
+        only the new candidates are compared with the archive.
+        """
         X = np.atleast_2d(np.asarray(X, dtype=bool))
         F = np.atleast_2d(np.asarray(F, dtype=float))
-        if self.X is not None:
-            X = np.vstack([self.X, X])
-            F = np.vstack([self.F, F])
-        # unique solutions
-        _, idx = np.unique(X, axis=0, return_index=True)
-        X, F = X[np.sort(idx)], F[np.sort(idx)]
-        # non-dominated filter
-        le = (F[:, None, :] <= F[None, :, :]).all(-1)
-        lt = (F[:, None, :] < F[None, :, :]).any(-1)
-        dominated = (le & lt).any(0)
-        self.X, self.F = X[~dominated], F[~dominated]
+        if self.X is None:
+            _, idx = np.unique(X, axis=0, return_index=True)
+            idx = np.sort(idx)
+            X, F = X[idx], F[idx]
+            self.X, self.F = X[~self._dominated(F, F)], F[~self._dominated(F, F)]
+            self._keys = {x.tobytes() for x in self.X}
+            return
+        # new, unique candidates (first occurrence, original order)
+        keep, seen = [], set(self._keys)
+        for i, x in enumerate(X):
+            k = x.tobytes()
+            if k not in seen:
+                seen.add(k)
+                keep.append(i)
+        if not keep:
+            return
+        Xc, Fc = X[keep], F[keep]
+        ok = ~self._dominated(Fc, Fc) & ~self._dominated(self.F, Fc)
+        Xc, Fc = Xc[ok], Fc[ok]
+        if not len(Xc):
+            return
+        alive = ~self._dominated(Fc, self.F)
+        self.X = np.vstack([self.X[alive], Xc])
+        self.F = np.vstack([self.F[alive], Fc])
+        self._keys = {x.tobytes() for x in self.X}
+
+    @staticmethod
+    def _dominated(A: np.ndarray, B: np.ndarray) -> np.ndarray:
+        """Mask over rows of B: dominated by at least one row of A."""
+        if len(A) == 0 or len(B) == 0:
+            return np.zeros(len(B), dtype=bool)
+        le = (A[:, None, :] <= B[None, :, :]).all(-1)
+        lt = (A[:, None, :] < B[None, :, :]).any(-1)
+        return (le & lt).any(0)
+
+
+# ============================================================
+# EXACT FRONT FOR SMALL ROUNDS
+# ============================================================
+
+def enumerate_packings(structures: ExchangeStructures, ids: List[int],
+                       limit: int) -> Optional[List[List[int]]]:
+    """
+    All sets of pairwise node-disjoint structures (the empty set
+    included), as lists of structure indices. Returns None as soon
+    as there are more than `limit` (then NSGA-III is used).
+    """
+    pos = {pid: k for k, pid in enumerate(ids)}
+    masks = []
+    for nodes in structures.nodes:
+        m = 0
+        for pid in nodes:
+            m |= 1 << pos[pid]
+        masks.append(m)
+    out: List[List[int]] = []
+    stack = [(0, 0, [])]                       # (next index, used mask, chosen)
+    while stack:
+        k, used, chosen = stack.pop()
+        if k == len(masks):
+            out.append(chosen)
+            if len(out) > limit:
+                return None
+            continue
+        stack.append((k + 1, used, chosen))            # skip structure k
+        if not used & masks[k]:
+            stack.append((k + 1, used | masks[k], chosen + [k]))
+    return out
+
+
+def exact_round(pool_pairs: List[Patient], structures: ExchangeStructures,
+                edges: Dict, packings: List[List[int]]) -> "MOEAResult":
+    """Exact Pareto front of a round with few feasible matchings."""
+    evaluator = ObjectiveEvaluator(pool_pairs)
+    ids = [p.pair_id for p in pool_pairs]
+    pos = {pid: k for k, pid in enumerate(ids)}
+    sets, X, raw = [], [], []
+    for pk in packings:
+        m = set()
+        for k in pk:
+            m.update(structures.nodes[k])
+        x = np.zeros(len(ids), dtype=bool)
+        x[[pos[i] for i in m]] = True
+        sets.append(m)
+        X.append(x)
+        raw.append(evaluator.evaluate(m))
+    raw = np.array(raw)
+    F_norm = np.atleast_2d(evaluator.minimisation_vector(raw))
+    # non-dominated filter over unique matchings
+    _, idx = np.unique(np.array(X), axis=0, return_index=True)
+    idx = np.sort(idx)
+    G = F_norm[idx]
+    le = (G[:, None, :] <= G[None, :, :]).all(-1)
+    lt = (G[:, None, :] < G[None, :, :]).any(-1)
+    keep = idx[~(le & lt).any(0)]
+    F_old = raw[keep].copy()
+    F_old[:, 0] = -raw[keep, 0]
+    return MOEAResult(np.array(X)[keep], F_old, F_norm[keep],
+                      [sets[k] for k in keep],
+                      [compute_hypervolume_norm(F_norm[keep])], [], [],
+                      structures, edges, exact=True)
 
 
 # ============================================================
@@ -434,6 +564,7 @@ class MOEAResult:
     reward_trace: List[float] = field(default_factory=list)
     structures: Optional[ExchangeStructures] = None
     edges: Optional[Dict] = None
+    exact: bool = False           # True: small round solved by enumeration
 
     @property
     def final_hv(self) -> float:
@@ -490,6 +621,13 @@ def run_moea_round(
     if structures is None:
         structures = build_exchange_structures(pool_pairs, edges)
     aos = aos if aos is not None else FixedAOS()
+
+    if EXACT_MAX_PACKINGS > 0:
+        packings = enumerate_packings(structures, [p.pair_id for p in pool_pairs],
+                                      EXACT_MAX_PACKINGS)
+        if packings is not None:
+            return exact_round(pool_pairs, structures, edges, packings)
+
     problem = KEPProblem(pool_pairs, edges, structures=structures,
                          preferred=guide_structures)
     ids = problem.repairer.ids

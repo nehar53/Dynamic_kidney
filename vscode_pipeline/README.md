@@ -74,9 +74,11 @@ python module10_experiment.py --analyse-only --experiment all
 | `sens_mud` | mu_d 0.01 / 0.02 / 0.04, high-cPRA exits at 0.3 mu_d | 30 |
 | `scalability` | initial pool 200 (500, 1000 with `--allow-large`) | 10 |
 
-**Runtime.** An NSGA round at the full budget takes 8–60 s (it grows with
-the pool), so one 25-round MOEA trajectory takes about 10–20 min and the
-main design (1,800 MOEA trajectories) needs several hundred CPU-hours. Use
+**Runtime.** After the module 5 speed-up a 25-round myopic NSGA-III
+trajectory at the full budget takes about 2 min on one core (batched about
+0.5 min), so the main design (1,800 MOEA trajectories) needs roughly 50
+CPU-hours. Rounds with at most 200 feasible matchings are solved exactly
+(column `exact_front`); the AOS is not invoked in those rounds. Use
 `--jobs` (about the number of cores), the `--pilot` timing, and if possible
 several computers with `--shard 1/3`, `--shard 2/3`, `--shard 3/3` and the
 same `--out` folder copied together afterwards.

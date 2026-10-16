@@ -201,8 +201,9 @@ EXPERIMENTS: Dict[str, Dict] = {
 SENSITIVITY = ["sens_select", "sens_cit", "sens_batch", "sens_mud"]
 
 # Rough seconds per NSGA-III clearing round at N = 100, G = 150 for a
-# 50-70 patient pool (measured: 8-60 s). Used only for the estimate.
-SEC_PER_MOEA_ROUND = 40.0
+# 50-70 patient pool on one core (measured ~6-15 s after the module 5
+# speed-up; small rounds are solved exactly in < 1 s). Planning only.
+SEC_PER_MOEA_ROUND = 12.0
 SEC_PER_ILP_ROUND = 0.1
 
 
@@ -440,6 +441,9 @@ def per_run_metrics(rounds: pd.DataFrame) -> pd.DataFrame:
             "mean_pool_size": g["pool_size"].mean(),
             "mean_wait": g["mean_wait"].mean(),
             "mean_seconds_per_clearing": c["seconds"].mean(),
+            # rounds small enough to be solved by exact enumeration
+            "share_exact_rounds": (c["exact_front"].astype(bool).mean()
+                                   if "exact_front" in c and len(c) else np.nan),
         }
         for col in arm_cols:
             row[f"share_{col}"] = (c[col].sum() / arm_total

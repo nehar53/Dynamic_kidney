@@ -250,7 +250,7 @@ def simulate_trajectory(
             structures = build_exchange_structures(pairs, edges)
             ilp_ids, f1_ilp, ilp_info = solve_ilp_max_transplants(
                 pairs, edges, structures)
-            hv, front_size = np.nan, 0
+            hv, front_size, exact = np.nan, 0, False
             arm_counts = np.zeros(len(MUTATION_RATES), dtype=int)
 
             if method == "ilp":
@@ -273,6 +273,7 @@ def simulate_trajectory(
                 )
                 matched, _ = select_solution(res, selection_rule, min_f1_ratio)
                 hv, front_size = res.final_hv, len(res.matched_sets)
+                exact = bool(getattr(res, "exact", False))
                 arm_counts = res.arm_counts()
                 if dynamic:
                     warm = res.matched_sets
@@ -291,6 +292,7 @@ def simulate_trajectory(
                 "F1_ILP": f1_ilp,
                 "F1": obj["F1"], "F2": obj["F2"], "F3": obj["F3"], "F4": obj["F4"],
                 "PoF": pof, "HV": hv, "front_size": front_size,
+                "exact_front": exact,
                 "arm": int(np.argmax(arm_counts)) if arm_counts.sum() else -1,
                 **{f"arm_{rate}": int(c) for rate, c in zip(MUTATION_RATES, arm_counts)},
                 "high_cpra_matched": sum(1 for p in high if p.pair_id in matched),
