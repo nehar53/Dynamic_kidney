@@ -414,6 +414,14 @@ def compute_hypervolume_norm(F_norm: np.ndarray) -> float:
     return float(HV(ref_point=HV_REF_POINT)(G))
 
 
+def _first_front(F: np.ndarray) -> np.ndarray:
+    """Non-dominated rows of F (minimisation)."""
+    F = np.atleast_2d(np.asarray(F, dtype=float))
+    le = (F[:, None, :] <= F[None, :, :]).all(-1)
+    lt = (F[:, None, :] < F[None, :, :]).any(-1)
+    return F[~(le & lt).any(0)]
+
+
 def compute_hypervolume(F: np.ndarray, n_pairs: int) -> float:
     """Backwards-compatible: F in the old (-F1, F2, F3, F4) form."""
     if F is None or len(F) == 0:
@@ -654,8 +662,11 @@ def run_moea_round(
 
     algo.next()                                    # generation 0: initial population
     archive = ParetoArchive()
-    archive.update(algo.opt.get("X"), algo.opt.get("F"))
-    hv_prev = compute_hypervolume_norm(algo.opt.get("F"))
+    # NOTE: pymoo's NSGA-III sets algo.opt to the first-front solutions
+    # closest to a reference direction only, so the WHOLE population is
+    # passed to the archive and the HV uses its non-dominated set.
+    archive.update(algo.pop.get("X"), algo.pop.get("F"))
+    hv_prev = compute_hypervolume_norm(_first_front(algo.pop.get("F")))
     hv_trace, arm_trace, reward_trace = [hv_prev], [], []
     best_gain = 1e-12
 
@@ -663,8 +674,8 @@ def run_moea_round(
         arm, rate = aos.get_mutation_rate(context)
         mutation.rate = rate
         algo.next()
-        archive.update(algo.opt.get("X"), algo.opt.get("F"))
-        hv_now = compute_hypervolume_norm(algo.opt.get("F"))
+        archive.update(algo.pop.get("X"), algo.pop.get("F"))
+        hv_now = compute_hypervolume_norm(_first_front(algo.pop.get("F")))
         gain = max(0.0, hv_now - hv_prev)
         best_gain = max(best_gain, gain)
         reward = gain / best_gain
@@ -675,6 +686,7 @@ def run_moea_round(
         reward_trace.append(reward)
 
     X, F_norm = archive.X, archive.F            # final front = archive
+    hv_trace.append(compute_hypervolume_norm(F_norm))   # final_hv = HV of the front
     matched_sets = [problem.repairer.matched_ids(x) for x in X]
     raw = np.array([problem.evaluator.evaluate(m) for m in matched_sets])
     F_old = raw.copy()
