@@ -193,10 +193,11 @@ EXPERIMENTS: Dict[str, Dict] = {
         "taus": [12], "runs": 30,
         "about": "competing exit rate mu_d"},
     "scalability": {
-        "variants": ["n200", "n500", "n1000"],
+        "variants": ["n200", "n500"],
         "configs": ["dyn_nsga3_ucb1_myopic", "myopic_ilp", "dickerson_lex"],
         "taus": [12], "runs": 10, "rounds": 10,
-        "about": "initial pools of 200 / 500 / 1000 vertices"},
+        "about": "initial pools of 200 (all) and 500 vertices (ILP only; "
+                 "needs --allow-large)"},
 }
 SENSITIVITY = ["sens_select", "sens_cit", "sens_batch", "sens_mud"]
 
@@ -312,6 +313,10 @@ def plan(args) -> List[Dict]:
               f"take minutes per round (500 vertices: ~180k cycles, "
               f"~3 min ILP). Add --allow-large to include them.")
         tasks = [t for t in tasks if t["variant"] not in large]
+    # pools above MAX_SAFE_POOL: ILP baselines only (as in the paper)
+    tasks = [t for t in tasks
+             if not (is_moea(t["config"]) and
+                     variant_settings(t["variant"])["n_pairs"] > MAX_SAFE_POOL)]
     if args.shard:
         i, k = args.shard
         tasks = [t for n, t in enumerate(tasks) if n % k == i - 1]
@@ -791,6 +796,12 @@ def analyse_main(rounds: pd.DataFrame, runs: pd.DataFrame, out: Path,
                              & base_r["run"].isin(base["run"].unique())],
                       pair_col="run")
     trend.to_csv(out / "table_pof_trend.csv", index=False)
+    # round 1 clears the initial backlog of 75 vertices (large F1_ILP,
+    # PoF near the 10% cap): trend after the backlog, rounds 2..T
+    trend2 = pof_trend(base_r[base_r["config"].isin(MOEA_CONFIGS)
+                              & base_r["run"].isin(base["run"].unique())
+                              & (base_r["round"] > 1)], pair_col="run")
+    trend2.to_csv(out / "table_pof_trend_after_round1.csv", index=False)
 
     # PoF_t trajectory and clearing comparison per round
     traj = (base_r[base_r["cleared"]]
@@ -844,6 +855,12 @@ def analyse_main(rounds: pd.DataFrame, runs: pd.DataFrame, out: Path,
         print("\n=== PoF TREND (slope of PoF_t over rounds, pp/round) ===")
         print(t.round(4).to_string(index=False))
         md += ["### PoF trend over rounds", "", _md_table(t.round(4)), ""]
+    if len(trend2):
+        t2 = trend2.assign(config=trend2["config"].map(SHORT))
+        print("\n=== PoF TREND, rounds 2..T (after the initial backlog) ===")
+        print(t2.round(4).to_string(index=False))
+        md += ["### PoF trend, rounds 2..T (after the initial backlog)", "",
+               _md_table(t2.round(4)), ""]
     if len(arms):
         print("\n=== AOS ARM DISTRIBUTION (share of generations) ===")
         print(arms.round(3).to_string(index=False))
