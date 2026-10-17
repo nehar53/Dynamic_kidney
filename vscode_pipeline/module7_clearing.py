@@ -5,14 +5,15 @@ import numpy as np
 
 from module1_generator import Patient, Pool, generate_initial_pool
 from module2_pool_evolution import LAMBDA_ARRIVALS, MU_D, PoolEvolution
-from module3_logistics import build_compatibility_graph, build_exchange_structures
+from module3_logistics import add_chains, build_compatibility_graph, build_exchange_structures
 from module4_objectives import compute_all_objectives, compute_pof, round_metrics
 from module5_nsga3_aos import (
     MUTATION_RATES, N_GENERATIONS, N_POPULATION,
     FixedAOS, LinUCBAOS, MOEAResult, UCB1AOS,
     build_context_vector, run_moea_round,
 )
-from module6_ilp_baseline import solve_ilp_lexicographic, solve_ilp_max_transplants
+from module6_ilp_baseline import (solve_ilp_lexicographic, solve_ilp_max_transplants,
+                                  solve_ilp_picef)
 
 # ============================================================
 # MODULE 7: CLEARING STRATEGIES + ONE DYNAMIC TRAJECTORY
@@ -248,6 +249,12 @@ def simulate_trajectory(
             t0 = time.time()
             edges = graph_builder(pairs)
             structures = build_exchange_structures(pairs, edges)
+            picef_added = 0
+            if structures.truncated:
+                # chain list was capped: add the chains of the exact
+                # (PICEF) optimum, so that F1_ILP is the true optimum
+                _, pinfo = solve_ilp_picef(pairs, edges)
+                picef_added = add_chains(structures, pinfo["chains"], edges)
             ilp_ids, f1_ilp, ilp_info = solve_ilp_max_transplants(
                 pairs, edges, structures)
             hv, front_size, exact = np.nan, 0, False
@@ -289,6 +296,7 @@ def simulate_trajectory(
                 "n_cycles": structures.n_cycles(),
                 "n_chains": structures.n_chains(),
                 "chains_truncated": structures.truncated,
+                "picef_chains_added": picef_added,
                 "F1_ILP": f1_ilp,
                 "F1": obj["F1"], "F2": obj["F2"], "F3": obj["F3"], "F4": obj["F4"],
                 "PoF": pof, "HV": hv, "front_size": front_size,

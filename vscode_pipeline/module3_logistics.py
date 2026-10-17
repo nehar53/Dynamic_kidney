@@ -347,6 +347,29 @@ def enumerate_chains(edges: Dict[Tuple[int, int], float],
     return sorted(keep), True
 
 
+def add_chains(structures: "ExchangeStructures", chains, edges) -> int:
+    """
+    Add chains (A, p1, ..., pk) that are not yet in the structure list
+    (used to add the chains of the PICEF optimum when the chain list
+    was truncated). Returns the number of chains added.
+    """
+    have = {tuple(n) for n, kd in zip(structures.nodes, structures.kind)
+            if kd == 'chain'}
+    added = 0
+    for ch in chains:
+        ch = tuple(ch)
+        if len(ch) < 2 or ch in have:
+            continue
+        structures.nodes.append(ch)
+        structures.recipients.append(ch[1:])
+        structures.kind.append('chain')
+        structures.weight.append(sum(edges[(ch[k], ch[k + 1])]
+                                     for k in range(len(ch) - 1)))
+        have.add(ch)
+        added += 1
+    return added
+
+
 def build_exchange_structures(pool_pairs: List[Patient],
                               edges: Optional[Dict] = None,
                               max_cycle_len: int = MAX_CYCLE_LEN,

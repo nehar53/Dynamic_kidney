@@ -277,8 +277,20 @@ def solve_ilp_picef(
     solver = _cbc_solver(time_limit) or pulp.PULP_CBC_CMD(msg=False)
     prob.solve(solver)
     f1 = float(pulp.value(prob.objective) or 0.0)
+    # chains of the optimal matching: follow the used arcs from each altruist
+    used = {(i, k): j for (i, j, k), var in y.items()
+            if (var.value() or 0) > 0.5}
+    chains = []
+    for a in sorted(alts):
+        if (a, 1) in used:
+            chain, node, k = [a], a, 1
+            while (node, k) in used:
+                node = used[(node, k)]
+                chain.append(node)
+                k += 1
+            chains.append(tuple(chain))
     return round(f1), {"n_cycles": len(cycles), "n_arc_vars": len(y),
-                       "seconds": time.time() - t0}
+                       "chains": chains, "seconds": time.time() - t0}
 
 
 def verify_disjoint(structs: List[Tuple[int, ...]]) -> bool:
