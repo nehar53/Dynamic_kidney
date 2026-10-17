@@ -88,6 +88,11 @@ finishes. Ctrl+C at any time and re-run the same command.
 `results/manifest.json` records the budget and package versions; one
 folder holds one budget.
 
+After module 10 main and module 9, run module 11 (press Run): it runs the
+sensitivity and scalability experiments and writes
+`results/paper/paper_numbers.md` (all numbers for the manuscript) and
+`results/paper/tab_*.tex`.
+
 PrefLib validation: see module 9 (`python module9_preflib.py --preset test`).
 
 ## Outputs (`results/`)
