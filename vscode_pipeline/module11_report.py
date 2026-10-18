@@ -127,8 +127,21 @@ def _ms(s: pd.Series, dec: int) -> str:
 # STEPS THAT RUN EXPERIMENTS (via module 10)
 # ============================================================
 
+def _module10():
+    """Module 10, saved as module10_experiment.py or module10_experiments.py."""
+    try:
+        import module10_experiment as m10
+    except ModuleNotFoundError:
+        try:
+            import module10_experiments as m10
+        except ModuleNotFoundError:
+            raise SystemExit("Module 10 not found: put module10_experiment.py "
+                             "in the same folder as module11_report.py")
+    return m10
+
+
 def run_module10(argv: List[str]) -> None:
-    import module10_experiment as m10
+    m10 = _module10()
     print("\n" + "#" * 66 + f"\n# module 10 {' '.join(argv)}\n" + "#" * 66)
     m10.main(argv)
 
@@ -294,7 +307,7 @@ def report_main(res: Path, md: List[str], js: Dict, texdir: Path) -> None:
 # ============================================================
 
 def report_tables(res: Path, md: List[str], js: Dict, texdir: Path) -> None:
-    import module10_experiment as m10
+    m10 = _module10()
     for exp in m10.SENSITIVITY:
         p = res / f"table_{exp}.csv"
         if not p.exists():
