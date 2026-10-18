@@ -67,7 +67,7 @@ def _cbc_solve(prob, time_limit: int) -> bool:
         try:
             prob.solve(solver)
             return True
-        except pulp.PulpSolverError:
+        except (pulp.PulpSolverError, MemoryError):
             continue
     return False
 

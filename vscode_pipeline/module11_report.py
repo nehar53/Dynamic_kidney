@@ -41,6 +41,8 @@ from scipy.stats import wilcoxon
 
 RUN_STEPS = ["sensitivity", "scalability", "ablation", "report"]
 ABLATION_POOLS = 30                 # AOS ablation: initial pools (seeds 42..)
+SCALABILITY_JOBS = 2                # 500-vertex ILPs need ~2-3 GB each;
+                                    # more parallel jobs run out of RAM
 RESULTS = "results"                 # module 10 output folder
 OOD_MAIN = "results/ood_main"       # module 9 preset "main" / "batched"
 OOD_ILP = "results/ood_ilp_sizes"   # module 9 preset "ilp"
@@ -632,8 +634,9 @@ def main(argv=None) -> None:
     if "sensitivity" in args.steps:
         run_module10(["--experiment", "sensitivity", "--out", args.results] + jobs)
     if "scalability" in args.steps:
+        sjobs = min(args.jobs or SCALABILITY_JOBS, SCALABILITY_JOBS)
         run_module10(["--experiment", "scalability", "--allow-large",
-                      "--out", args.results] + jobs)
+                      "--out", args.results, "--jobs", str(sjobs)])
     if "ablation" in args.steps:
         run_ablation(args)
     if "report" in args.steps:
