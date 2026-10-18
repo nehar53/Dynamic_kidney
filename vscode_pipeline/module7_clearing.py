@@ -249,12 +249,13 @@ def simulate_trajectory(
             t0 = time.time()
             edges = graph_builder(pairs)
             structures = build_exchange_structures(pairs, edges)
-            picef_added = 0
+            picef_added, picef_failed = 0, False
             if structures.truncated:
                 # chain list was capped: add the chains of the exact
                 # (PICEF) optimum, so that F1_ILP is the true optimum
                 _, pinfo = solve_ilp_picef(pairs, edges)
                 picef_added = add_chains(structures, pinfo["chains"], edges)
+                picef_failed = bool(pinfo.get("failed", False))
             ilp_ids, f1_ilp, ilp_info = solve_ilp_max_transplants(
                 pairs, edges, structures)
             hv, front_size, exact = np.nan, 0, False
@@ -297,6 +298,8 @@ def simulate_trajectory(
                 "n_chains": structures.n_chains(),
                 "chains_truncated": structures.truncated,
                 "picef_chains_added": picef_added,
+                "picef_failed": picef_failed,
+                "ilp_solver": ilp_info.get("solver", ""),
                 "F1_ILP": f1_ilp,
                 "F1": obj["F1"], "F2": obj["F2"], "F3": obj["F3"], "F4": obj["F4"],
                 "PoF": pof, "HV": hv, "front_size": front_size,

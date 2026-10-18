@@ -54,6 +54,24 @@ def _cbc_solver(time_limit: int, msg: bool = False):
         return None
 
 
+def _cbc_solve(prob, time_limit: int) -> bool:
+    """
+    Solve a PuLP model with CBC. On Windows the CBC executable very
+    occasionally exits without writing a solution (PulpSolverError);
+    it is retried once. Returns False if CBC still fails, so the
+    caller can fall back to HiGHS.
+    """
+    import pulp
+    for _ in range(2):
+        solver = _cbc_solver(time_limit) or pulp.PULP_CBC_CMD(msg=False)
+        try:
+            prob.solve(solver)
+            return True
+        except pulp.PulpSolverError:
+            continue
+    return False
+
+
 def _solve_packing(
     nodes: List[Tuple[int, ...]],
     values: np.ndarray,
@@ -86,7 +104,8 @@ def _solve_packing(
     if extra_ge is not None:
         a, rhs = extra_ge
         prob += pulp.lpSum(float(a[k]) * x[k] for k in range(len(nodes))) >= rhs
-    prob.solve(solver)
+    if not _cbc_solve(prob, time_limit):
+        return _solve_packing_highs(nodes, values, extra_ge, time_limit), "highs"
     return [k for k in range(len(nodes))
             if x[k].value() is not None and x[k].value() > 0.5], "cbc"
 
@@ -274,8 +293,12 @@ def solve_ilp_picef(
             prob += (pulp.lpSum(out_of.get((v, k + 1), [])) <=
                      pulp.lpSum(into.get((v, k), [])))
 
-    solver = _cbc_solver(time_limit) or pulp.PULP_CBC_CMD(msg=False)
-    prob.solve(solver)
+    if not _cbc_solve(prob, time_limit):
+        # PICEF only adds chains the capped enumeration missed; if CBC
+        # fails twice the round keeps its enumerated chains.
+        return 0, {"n_cycles": len(cycles), "n_arc_vars": len(y),
+                   "chains": [], "failed": True,
+                   "seconds": time.time() - t0}
     f1 = float(pulp.value(prob.objective) or 0.0)
     # chains of the optimal matching: follow the used arcs from each altruist
     used = {(i, k): j for (i, j, k), var in y.items()
