@@ -39,7 +39,8 @@ from scipy.stats import wilcoxon
 # Every step is resumable (finished trajectories are kept). The report
 # only reads results; missing parts are listed as "not available".
 
-RUN_STEPS = ["sensitivity", "scalability", "report"]
+RUN_STEPS = ["sensitivity", "scalability", "ablation", "report"]
+ABLATION_POOLS = 30                 # AOS ablation: initial pools (seeds 42..)
 RESULTS = "results"                 # module 10 output folder
 OOD_MAIN = "results/ood_main"       # module 9 preset "main" / "batched"
 OOD_ILP = "results/ood_ilp_sizes"   # module 9 preset "ilp"
@@ -144,6 +145,130 @@ def run_module10(argv: List[str]) -> None:
     m10 = _module10()
     print("\n" + "#" * 66 + f"\n# module 10 {' '.join(argv)}\n" + "#" * 66)
     m10.main(argv)
+
+
+# ============================================================
+# STEP "ablation": BANDITS vs FIXED MUTATION RATES
+# ============================================================
+#
+# One clearing round on initial pools of 75 vertices, full budget
+# (N = 100, G = 150), with and without the ILP guidance. Settings:
+# UCB1, LinUCB and fixed rates 0.01 / 0.10 / 0.25. Shows whether the
+# operator choice matters when the search is hard (unguided) and when
+# it is easy (guided).
+
+ABL_SETTINGS = ["UCB1", "LinUCB", "fixed 0.01", "fixed 0.10", "fixed 0.25"]
+
+
+def _ablation_task(seed: int, guided: bool) -> List[Dict]:
+    from module1_generator import generate_initial_pool
+    from module3_logistics import (add_chains, build_compatibility_graph,
+                                   build_exchange_structures)
+    from module5_nsga3_aos import (FixedAOS, LinUCBAOS, UCB1AOS,
+                                   build_context_vector, run_moea_round)
+    from module6_ilp_baseline import solve_ilp_max_transplants, solve_ilp_picef
+    pool, _ = generate_initial_pool(n_pairs=75, seed=seed, initial_wait_max=6)
+    P = pool.pairs
+    e = build_compatibility_graph(P)
+    s = build_exchange_structures(P, e)
+    if s.truncated:
+        add_chains(s, solve_ilp_picef(P, e)[1]["chains"], e)
+    _, f1_ilp, info = solve_ilp_max_transplants(P, e, s)
+    ctx = build_context_vector(P, 0, 1, 25, 0.0)
+    make = {"UCB1": lambda: UCB1AOS(seed=seed), "LinUCB": lambda: LinUCBAOS(seed=seed),
+            "fixed 0.01": lambda: FixedAOS(0.01), "fixed 0.10": lambda: FixedAOS(0.10),
+            "fixed 0.25": lambda: FixedAOS(0.25)}
+    rows = []
+    for name in ABL_SETTINGS:
+        t0 = time.time()
+        r = run_moea_round(P, make[name](), ctx, n_gen=150, pop_size=100, seed=seed,
+                           edges=e, structures=s,
+                           guide_structures=info["structure_indices"] if guided else None)
+        rows.append({"seed": seed, "guided": guided, "setting": name,
+                     "HV": r.final_hv, "max_F1": float(-r.F[:, 0].min()),
+                     "F1_ILP": f1_ilp, "front_size": len(r.matched_sets),
+                     "min_F3_at_max_F1": float(r.F[r.F[:, 0] == r.F[:, 0].min(), 2].min()),
+                     "seconds": time.time() - t0})
+    return rows
+
+
+def run_ablation(args) -> None:
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+    from multiprocessing import get_context
+    out = Path(args.results) / "ablation_aos.csv"
+    done = set()
+    if out.exists():
+        old = pd.read_csv(out)
+        done = {(int(a), bool(b)) for a, b in zip(old["seed"], old["guided"])}
+    todo = [(sd, g) for sd in range(42, 42 + args.ablation_pools)
+            for g in (False, True) if (sd, g) not in done]
+    print(f"\nAOS ablation: {len(done)} done, {len(todo)} to run")
+    jobs = args.jobs or max(1, (os.cpu_count() or 2) - 1)
+
+    def save(rows):
+        df = pd.DataFrame(rows)
+        df.to_csv(out, mode="a", header=not out.exists(), index=False)
+
+    if jobs > 1 and todo:
+        with ProcessPoolExecutor(max_workers=jobs, mp_context=get_context("spawn")) as ex:
+            futs = {ex.submit(_ablation_task, sd, g): (sd, g) for sd, g in todo}
+            for k, f in enumerate(as_completed(futs), 1):
+                save(f.result())
+                print(f"  [{k}/{len(todo)}] pool {futs[f][0]} "
+                      f"{'guided' if futs[f][1] else 'unguided'} done", flush=True)
+    else:
+        for k, (sd, g) in enumerate(todo, 1):
+            save(_ablation_task(sd, g))
+            print(f"  [{k}/{len(todo)}] pool {sd} {'guided' if g else 'unguided'} done",
+                  flush=True)
+
+
+def report_ablation(res: Path, md: List[str], js: Dict, texdir: Path) -> None:
+    from scipy.stats import friedmanchisquare
+    p = res / "ablation_aos.csv"
+    if not p.exists():
+        md += ["## 6. AOS ablation", "", "not available (step ablation)", ""]
+        return
+    a = pd.read_csv(p).drop_duplicates(["seed", "guided", "setting"])
+    md += ["## 6. AOS ablation: bandits vs fixed mutation rates "
+           "(one round, 75-vertex pools, N=100, G=150)", ""]
+    J = js.setdefault("ablation", {})
+    for guided in (False, True):
+        g = a[a["guided"] == guided]
+        if g.empty:
+            continue
+        w = g.pivot_table(index="seed", columns="setting", values="HV").dropna()
+        tab = (g.groupby("setting").agg(HV=("HV", "mean"), max_F1=("max_F1", "mean"),
+                                        F1_ILP=("F1_ILP", "mean"),
+                                        reaches_ILP=("max_F1", lambda x: np.nan))
+               .reindex(ABL_SETTINGS).reset_index())
+        reach = (g["max_F1"] >= g["F1_ILP"] - 1e-9).groupby(g["setting"]).mean()
+        tab["share pools reaching ILP optimum"] = tab["setting"].map(reach)
+        tab = tab.drop(columns="reaches_ILP")
+        fr = (friedmanchisquare(*[w[c] for c in ABL_SETTINGS if c in w])
+              if w.shape[1] >= 3 and len(w) >= 2 else None)
+        rows = []
+        for b, f in [("UCB1", "fixed 0.10"), ("LinUCB", "fixed 0.10"),
+                     ("UCB1", "fixed 0.01"), ("UCB1", "fixed 0.25"), ("UCB1", "LinUCB")]:
+            if b in w and f in w:
+                q = _paired(w[b], w[f])
+                rows.append({"a": b, "b": f, "HV_a": q["mean_a"], "HV_b": q["mean_b"],
+                             "p": q["p"], "d_z": q["d"], "n": q["n"]})
+        cmp_ = pd.DataFrame(rows)
+        if len(cmp_):
+            mk = cmp_["p"].notna()
+            cmp_["p_bonf"] = np.nan
+            cmp_.loc[mk, "p_bonf"] = np.minimum(1.0, cmp_.loc[mk, "p"] * mk.sum())
+        name = "with ILP guidance" if guided else "without ILP guidance"
+        md += [f"### {name} ({w.shape[0]} pools)", "", _md(tab), "",
+               f"Friedman on HV over the five settings: "
+               + (f"chi2 = {fr.statistic:.2f}, p = {_p(fr.pvalue)}" if fr else "n/a"), "",
+               _md(cmp_.assign(p=cmp_["p"].map(_p), p_bonf=cmp_["p_bonf"].map(_p)))
+               if len(cmp_) else "", ""]
+        J["guided" if guided else "unguided"] = {
+            "table": tab.round(5).to_dict("records"),
+            "friedman_p": None if fr is None else float(fr.pvalue),
+            "comparisons": cmp_.round(5).to_dict("records")}
 
 
 # ============================================================
@@ -281,6 +406,36 @@ def report_main(res: Path, md: List[str], js: Dict, texdir: Path) -> None:
         a["config"] = a["config"].map(SHORT)
         md += ["### 1e. Selected mutation rates (share of generations)", "", _md(a), ""]
         J["arms"] = a.round(4).to_dict("records")
+
+    # ---- where does the fairness gain come from? ----
+    mech = []
+    for tau in taus:
+        for cfg in (DYN_U, ILP):
+            g = rounds[(rounds["config"] == cfg) & (rounds["tau"] == tau) & rounds["cleared"]]
+            if g.empty:
+                continue
+            small, big = g[g["F1_ILP"] < 10], g[g["F1_ILP"] >= 10]
+            given_up = (g["F1_ILP"] - g["F1"]).groupby(g["run"]).sum().mean()
+            mech.append({"tau": tau, "config": SHORT[cfg],
+                         "share months F1_ILP<10": len(small) / len(g),
+                         "F3 months F1_ILP<10": small["F3"].mean(),
+                         "F3 months F1_ILP>=10": big["F3"].mean(),
+                         "PoF months F1_ILP>=10": big["PoF"].mean(),
+                         "transplants given up (sum F1_ILP-F1, per run)": given_up})
+        a_ = per(DYN_U, tau, "total_transplants")
+        b_ = per(ILP, tau, "total_transplants")
+        if len(a_) and len(b_):
+            mech.append({"tau": tau, "config": "-> actual trajectory difference vs ILP "
+                         "(transplants per run)",
+                         "transplants given up (sum F1_ILP-F1, per run)":
+                         float((b_ - a_).mean())})
+    mech = pd.DataFrame(mech)
+    md += ["### 1e2. Mechanism: free choice (F1_ILP < 10, PoF forced to 0) vs "
+           "deferral (F1_ILP >= 10)", "",
+           "If 'transplants given up' per round is larger than the actual "
+           "trajectory difference vs the myopic ILP, the deferred patients were "
+           "transplanted in later rounds.", "", _md(mech), ""]
+    J["mechanism"] = mech.round(5).to_dict("records")
 
     # ---- implementation statistics ----
     c = rounds[rounds["cleared"]]
@@ -441,6 +596,7 @@ def report(args) -> None:
     report_main(res, md, js, out)
     report_tables(res, md, js, out)
     report_ood(Path(args.ood_main), Path(args.ood_ilp), md, js, out)
+    report_ablation(res, md, js, out)
     if (res / "manifest.json").exists():
         js["manifest"] = json.loads((res / "manifest.json").read_text())
     (out / "paper_numbers.md").write_text("\n".join(md), encoding="utf-8")
@@ -459,7 +615,8 @@ def report(args) -> None:
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(description="Module 11: remaining experiments + paper numbers")
     ap.add_argument("--steps", nargs="+", default=RUN_STEPS,
-                    choices=["sensitivity", "scalability", "report"])
+                    choices=["sensitivity", "scalability", "ablation", "report"])
+    ap.add_argument("--ablation-pools", type=int, default=ABLATION_POOLS)
     ap.add_argument("--jobs", type=int, default=None)
     ap.add_argument("--results", default=RESULTS)
     ap.add_argument("--ood-main", default=OOD_MAIN)
@@ -477,6 +634,8 @@ def main(argv=None) -> None:
     if "scalability" in args.steps:
         run_module10(["--experiment", "scalability", "--allow-large",
                       "--out", args.results] + jobs)
+    if "ablation" in args.steps:
+        run_ablation(args)
     if "report" in args.steps:
         report(args)
     print("\n" + "=" * 66 + "\nMODULE 11 COMPLETE\n" + "=" * 66)

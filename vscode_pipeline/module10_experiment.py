@@ -151,6 +151,15 @@ VARIANTS: Dict[str, Dict] = {
     "mud001":     {"mu_d": 0.01},
     "mud004":     {"mu_d": 0.04},
     "mudhi03":    {"mu_d_high_mult": 0.3},
+    # implemented solution: no transplant given up at all (PoF_t = 0)
+    "floor100":   {"min_f1_ratio": 1.0},
+    # arrival rate calibrated to one ANZKX statistic at a time (myopic
+    # ILP, tau = 12, 10 seeds): lambda = 7 -> 49.7 transplants/year
+    # (ANZKX ~50); lambda = 13 -> 59.7 patients waiting (ANZKX 60-90)
+    "lam7":       {"lambda_arrivals": 7.0},
+    "lam13":      {"lambda_arrivals": 13.0},
+    # batching threshold closer to the simulated pool size
+    "nstar60":    {"batch_threshold": 60},
     # scalability: arrivals and n* scaled with the initial pool
     "n200":       {"n_pairs": 200},
     "n500":       {"n_pairs": 500},
@@ -171,8 +180,9 @@ EXPERIMENTS: Dict[str, Dict] = {
         "taus": [6, 12, 18], "runs": 100,
         "about": "8 baselines x 3 tau (Sections 4.4-4.5)"},
     "sens_select": {
-        "variants": ["base", "floor80", "compromise"],
-        "configs": ["dyn_nsga3_ucb1_myopic", "dyn_nsga3_ucb1_batched"],
+        "variants": ["base", "floor100", "floor80", "compromise"],
+        "configs": ["dyn_nsga3_ucb1_myopic", "dyn_nsga3_ucb1_batched",
+                    "myopic_ilp"],
         "taus": [12], "runs": 30,
         "about": "which Pareto solution is implemented"},
     "sens_cit": {
@@ -186,6 +196,17 @@ EXPERIMENTS: Dict[str, Dict] = {
         "configs": ["dyn_nsga3_ucb1_batched", "dyn_nsga3_linucb_batched"],
         "taus": [6, 12, 18], "runs": 30,
         "about": "batched clearing with a 3-round maximum interval"},
+    "sens_lambda": {
+        "variants": ["base", "lam7", "lam13"],
+        "configs": ["dyn_nsga3_ucb1_myopic", "dyn_nsga3_ucb1_batched",
+                    "myopic_ilp", "dickerson_lex"],
+        "taus": [12], "runs": 30,
+        "about": "arrival rate calibrated to ANZKX volume (7) or pool size (13)"},
+    "sens_nstar": {
+        "variants": ["base", "nstar60"],
+        "configs": ["dyn_nsga3_ucb1_myopic", "dyn_nsga3_ucb1_batched"],
+        "taus": [12, 18], "runs": 30,
+        "about": "batching threshold n* = 60 instead of 90"},
     "sens_mud": {
         "variants": ["base", "mud001", "mud004", "mudhi03"],
         "configs": ["dyn_nsga3_ucb1_myopic", "dyn_nsga3_ucb1_batched",
@@ -199,7 +220,8 @@ EXPERIMENTS: Dict[str, Dict] = {
         "about": "initial pools of 200 (all) and 500 vertices (ILP only; "
                  "needs --allow-large)"},
 }
-SENSITIVITY = ["sens_select", "sens_cit", "sens_batch", "sens_mud"]
+SENSITIVITY = ["sens_select", "sens_cit", "sens_batch", "sens_mud",
+               "sens_lambda", "sens_nstar"]
 
 # Rough seconds per NSGA-III clearing round at N = 100, G = 150 for a
 # 50-70 patient pool on one core (measured ~6-15 s after the module 5
@@ -234,6 +256,27 @@ def label(config: str, variant: str) -> str:
 # ============================================================
 # ONE TASK = ONE TRAJECTORY
 # ============================================================
+
+SELECTION_KEYS = {"selection_rule", "min_f1_ratio"}
+BATCH_KEYS = {"batch_threshold", "batch_max_interval"}
+
+
+def effective_variant(variant: str, config: str) -> str:
+    """
+    'base' when the variant only changes settings that cannot affect
+    this configuration (e.g. the batching threshold for myopic
+    clearing, the selection rule for the ILPs): its base runs are reused.
+    """
+    keys = set(VARIANTS[variant])
+    if not keys:
+        return variant
+    irrelevant = set(BATCH_KEYS)
+    if config in ("myopic_ilp", "dickerson_lex"):
+        irrelevant |= SELECTION_KEYS
+    elif BASELINES[config]["clearing"] == "batched":
+        irrelevant = set()
+    return "base" if keys <= irrelevant else variant
+
 
 def raw_path(out: Path, variant: str, config: str, tau: int, run: int) -> Path:
     return out / "raw" / f"{variant}__{config}__tau{tau}__run{run:03d}.csv"
@@ -303,8 +346,9 @@ def plan(args) -> List[Dict]:
                             "rounds": rounds, "gen": args.gen,
                             "pop": args.pop,
                             "initial_wait_max": args.initial_wait_max,
-                            "path": str(raw_path(out, variant, config,
-                                                 tau, run))})
+                            "path": str(raw_path(out,
+                                                 effective_variant(variant, config),
+                                                 config, tau, run))})
     large = sorted({t["variant"] for t in tasks
                     if variant_settings(t["variant"])["n_pairs"] > MAX_SAFE_POOL})
     if large and not args.allow_large:
@@ -342,7 +386,11 @@ def estimate_seconds(task: Dict) -> float:
 def run_all(args, tasks: List[Dict]) -> None:
     out = Path(args.out)
     (out / "raw").mkdir(parents=True, exist_ok=True)
-    todo = [t for t in tasks if not Path(t["path"]).exists()]
+    todo, seen_paths = [], set()
+    for t in tasks:                      # reused base runs: run each file once
+        if not Path(t["path"]).exists() and t["path"] not in seen_paths:
+            seen_paths.add(t["path"])
+            todo.append(t)
     # cheap trajectories first, then the MOEA ones (still run-major)
     todo.sort(key=lambda t: (is_moea(t["config"]), t["run"]))
     est = sum(estimate_seconds(t) for t in todo) / 3600
@@ -390,7 +438,12 @@ def run_all(args, tasks: List[Dict]) -> None:
 # ============================================================
 
 def collect(tasks: List[Dict]) -> pd.DataFrame:
-    frames = [pd.read_csv(t["path"]) for t in tasks if Path(t["path"]).exists()]
+    frames = []
+    for t in tasks:
+        if Path(t["path"]).exists():
+            df = pd.read_csv(t["path"])
+            df["variant"] = t["variant"]     # reused base runs get the label
+            frames.append(df)
     if not frames:
         raise SystemExit("No results found - run the experiment first.")
     rounds = pd.concat(frames, ignore_index=True)
@@ -888,9 +941,10 @@ def analyse_sensitivity(runs: pd.DataFrame, exp: str, out: Path,
         for c in e["configs"]:
             comps.append((label(c, v), label(c, ref)))
     for v in e["variants"]:
-        for myo, bat in (("dyn_nsga3_ucb1_myopic", "dyn_nsga3_ucb1_batched"),):
-            if myo in e["configs"] and bat in e["configs"]:
-                comps.append((label(myo, v), label(bat, v)))
+        for a, b in (("dyn_nsga3_ucb1_myopic", "dyn_nsga3_ucb1_batched"),
+                     ("dyn_nsga3_ucb1_myopic", "myopic_ilp")):
+            if a in e["configs"] and b in e["configs"]:
+                comps.append((label(a, v), label(b, v)))
     stats = compare_many_metrics(sub, TEST_METRICS, comps, group_col="tau",
                                  config_col="label", pair_col="run")
     stats.to_csv(out / f"table_{exp}_wilcoxon.csv", index=False)
