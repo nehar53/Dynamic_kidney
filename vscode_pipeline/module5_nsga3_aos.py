@@ -414,12 +414,18 @@ def compute_hypervolume_norm(F_norm: np.ndarray) -> float:
     return float(HV(ref_point=HV_REF_POINT)(G))
 
 
-def _first_front(F: np.ndarray) -> np.ndarray:
-    """Non-dominated rows of F (minimisation)."""
+def _first_front_mask(F: np.ndarray) -> np.ndarray:
+    """Boolean mask of the non-dominated rows of F (minimisation)."""
     F = np.atleast_2d(np.asarray(F, dtype=float))
     le = (F[:, None, :] <= F[None, :, :]).all(-1)
     lt = (F[:, None, :] < F[None, :, :]).any(-1)
-    return F[~(le & lt).any(0)]
+    return ~(le & lt).any(0)
+
+
+def _first_front(F: np.ndarray) -> np.ndarray:
+    """Non-dominated rows of F (minimisation)."""
+    F = np.atleast_2d(np.asarray(F, dtype=float))
+    return F[_first_front_mask(F)]
 
 
 def compute_hypervolume(F: np.ndarray, n_pairs: int) -> float:
@@ -611,6 +617,9 @@ def run_moea_round(
     structures: Optional[ExchangeStructures] = None,
     warm_start: Optional[List[Set[int]]] = None,
     guide_structures: Optional[List[int]] = None,
+    guide_priority: bool = True,
+    use_archive: bool = True,
+    allow_exact: bool = True,
 ) -> MOEAResult:
     """
     Run NSGA-III (or NSGA-II) for one clearing round, with the
@@ -623,6 +632,12 @@ def run_moea_round(
     warm_start: matched sets from the previous round (dynamic runs)
     guide_structures: indices (into `structures`) of the ILP optimum;
                 injected as a seed and repaired first (see header)
+    guide_priority: False = the ILP optimum is only a seed, its
+                structures get no repair priority (ablation)
+    use_archive: False = the final front is the non-dominated set of
+                the last population instead of the external archive
+                (ablation)
+    allow_exact: False = never enumerate small rounds exactly (ablation)
     """
     if edges is None:
         edges = build_compatibility_graph(pool_pairs)
@@ -630,14 +645,14 @@ def run_moea_round(
         structures = build_exchange_structures(pool_pairs, edges)
     aos = aos if aos is not None else FixedAOS()
 
-    if EXACT_MAX_PACKINGS > 0:
+    if allow_exact and EXACT_MAX_PACKINGS > 0:
         packings = enumerate_packings(structures, [p.pair_id for p in pool_pairs],
                                       EXACT_MAX_PACKINGS)
         if packings is not None:
             return exact_round(pool_pairs, structures, edges, packings)
 
     problem = KEPProblem(pool_pairs, edges, structures=structures,
-                         preferred=guide_structures)
+                         preferred=guide_structures if guide_priority else None)
     ids = problem.repairer.ids
 
     warm_start = list(warm_start or [])
@@ -685,7 +700,14 @@ def run_moea_round(
         arm_trace.append(arm)
         reward_trace.append(reward)
 
-    X, F_norm = archive.X, archive.F            # final front = archive
+    if use_archive:
+        X, F_norm = archive.X, archive.F        # final front = archive
+    else:                                       # ablation: last population only
+        Xp, Fp = algo.pop.get("X"), algo.pop.get("F")
+        keep = _first_front_mask(Fp)
+        X, F_norm = Xp[keep], Fp[keep]
+        _, uniq = np.unique(np.round(F_norm, 12), axis=0, return_index=True)
+        X, F_norm = X[np.sort(uniq)], F_norm[np.sort(uniq)]
     hv_trace.append(compute_hypervolume_norm(F_norm))   # final_hv = HV of the front
     matched_sets = [problem.repairer.matched_ids(x) for x in X]
     raw = np.array([problem.evaluator.evaluate(m) for m in matched_sets])

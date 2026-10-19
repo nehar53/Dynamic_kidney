@@ -39,7 +39,8 @@ from scipy.stats import wilcoxon
 # Every step is resumable (finished trajectories are kept). The report
 # only reads results; missing parts are listed as "not available".
 
-RUN_STEPS = ["sensitivity", "scalability", "ablation", "report"]
+RUN_STEPS = ["hybrid", "report"]   # sensitivity, scalability and ablation
+                                    # are finished; add them back to re-run
 ABLATION_POOLS = 30                 # AOS ablation: initial pools (seeds 42..)
 SCALABILITY_JOBS = 2                # 500-vertex ILPs need ~2-3 GB each;
                                     # more parallel jobs run out of RAM
@@ -274,6 +275,147 @@ def report_ablation(res: Path, md: List[str], js: Dict, texdir: Path) -> None:
 
 
 # ============================================================
+# STEP "hybrid": ABLATION OF THE ILP-GUIDED HYBRID
+# ============================================================
+#
+# Three arms on the same 75-vertex pools, one clearing round, UCB1,
+# N = 100, G = 150, exact enumeration off:
+#   NSGA-III alone   no ILP seed, no repair priority, no archive
+#   ILP seed only    ILP optimum in the initial population, no repair
+#                    priority, no archive
+#   Seed + priority  seed and repair priority, no archive
+#   Full hybrid      seed + repair priority + external archive
+# Reported: share of pools whose front reaches the ILP optimum, best
+# F1, hypervolume of the final front, PoF of the solution chosen by
+# the 90% floor rule (relative to the ILP optimum), and run time
+# (MOEA, ILP and total).
+
+HYB_ARMS = ["NSGA-III alone", "ILP seed only", "Seed + priority", "Full hybrid"]
+
+
+def _hybrid_task(seed: int) -> List[Dict]:
+    from module1_generator import generate_initial_pool
+    from module3_logistics import (add_chains, build_compatibility_graph,
+                                   build_exchange_structures)
+    from module4_objectives import compute_all_objectives, compute_pof
+    from module5_nsga3_aos import UCB1AOS, build_context_vector, run_moea_round
+    from module6_ilp_baseline import solve_ilp_max_transplants, solve_ilp_picef
+    from module7_clearing import select_solution
+    pool, _ = generate_initial_pool(n_pairs=75, seed=seed, initial_wait_max=6)
+    P = pool.pairs
+    t0 = time.time()
+    e = build_compatibility_graph(P)
+    s = build_exchange_structures(P, e)
+    t_struct = time.time() - t0
+    t0 = time.time()
+    if s.truncated:
+        add_chains(s, solve_ilp_picef(P, e)[1]["chains"], e)
+    _, f1_ilp, info = solve_ilp_max_transplants(P, e, s)
+    t_ilp = time.time() - t0
+    ctx = build_context_vector(P, 0, 1, 25, 0.0)
+    arms = {"NSGA-III alone": dict(guide_structures=None, use_archive=False),
+            "ILP seed only": dict(guide_structures=info["structure_indices"],
+                                  guide_priority=False, use_archive=False),
+            "Seed + priority": dict(guide_structures=info["structure_indices"],
+                                    use_archive=False),
+            "Full hybrid": dict(guide_structures=info["structure_indices"])}
+    rows = []
+    for name in HYB_ARMS:
+        t0 = time.time()
+        r = run_moea_round(P, UCB1AOS(seed=seed), ctx, n_gen=150, pop_size=100,
+                           seed=seed, edges=e, structures=s, allow_exact=False,
+                           **arms[name])
+        t_moea = time.time() - t0
+        matched, _ = select_solution(r, "floor", 0.9)
+        obj = compute_all_objectives(matched, P)
+        uses_ilp = name != "NSGA-III alone"
+        rows.append({"seed": seed, "arm": name, "F1_ILP": f1_ilp,
+                     "max_F1": float(-r.F[:, 0].min()),
+                     "reaches_ILP": float(-r.F[:, 0].min()) >= f1_ilp - 1e-9,
+                     "HV": r.final_hv, "front_size": len(r.matched_sets),
+                     "F1_selected": obj["F1"], "F3_selected": obj["F3"],
+                     "PoF_selected": compute_pof(f1_ilp, obj["F1"]),
+                     "sec_structures": t_struct, "sec_moea": t_moea,
+                     "sec_ilp": t_ilp if uses_ilp else 0.0,
+                     "sec_total": t_moea + (t_ilp if uses_ilp else 0.0)})
+    return rows
+
+
+def run_hybrid(args) -> None:
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+    from multiprocessing import get_context
+    out = Path(args.results) / "ablation_hybrid.csv"
+    done = set(pd.read_csv(out)["seed"].astype(int)) if out.exists() else set()
+    todo = [sd for sd in range(42, 42 + args.ablation_pools) if sd not in done]
+    print(f"\nHybrid ablation: {len(done)} pools done, {len(todo)} to run")
+    jobs = args.jobs or max(1, (os.cpu_count() or 2) - 1)
+
+    def save(rows):
+        pd.DataFrame(rows).to_csv(out, mode="a", header=not out.exists(), index=False)
+
+    if jobs > 1 and todo:
+        with ProcessPoolExecutor(max_workers=jobs, mp_context=get_context("spawn")) as ex:
+            futs = {ex.submit(_hybrid_task, sd): sd for sd in todo}
+            for k, f in enumerate(as_completed(futs), 1):
+                save(f.result())
+                print(f"  [{k}/{len(todo)}] pool {futs[f]} done", flush=True)
+    else:
+        for k, sd in enumerate(todo, 1):
+            save(_hybrid_task(sd))
+            print(f"  [{k}/{len(todo)}] pool {sd} done", flush=True)
+
+
+def report_hybrid(res: Path, md: List[str], js: Dict, texdir: Path) -> None:
+    from scipy.stats import friedmanchisquare
+    p = res / "ablation_hybrid.csv"
+    if not p.exists():
+        md += ["## 7. Hybrid ablation", "", "not available (step hybrid)", ""]
+        return
+    a = pd.read_csv(p).drop_duplicates(["seed", "arm"])
+    a["reaches_ILP"] = a["reaches_ILP"].astype(str).str.lower() == "true"
+    n = a["seed"].nunique()
+    tab = (a.groupby("arm").agg(
+        pools_at_optimum=("reaches_ILP", "mean"), max_F1=("max_F1", "mean"),
+        F1_ILP=("F1_ILP", "mean"), HV=("HV", "mean"), front_size=("front_size", "mean"),
+        PoF_selected=("PoF_selected", "mean"), F3_selected=("F3_selected", "mean"),
+        sec_moea=("sec_moea", "mean"), sec_ilp=("sec_ilp", "mean"),
+        sec_total=("sec_total", "mean"), sec_structures=("sec_structures", "mean"))
+        .reindex(HYB_ARMS).reset_index())
+    rows = []
+    for metric in ["HV", "max_F1", "PoF_selected", "sec_total"]:
+        w = a.pivot_table(index="seed", columns="arm", values=metric).dropna()
+        for x, y in [("Full hybrid", "NSGA-III alone"), ("Full hybrid", "ILP seed only"),
+                     ("Full hybrid", "Seed + priority"), ("ILP seed only", "NSGA-III alone")]:
+            if x in w and y in w:
+                q = _paired(w[x], w[y])
+                rows.append({"metric": metric, "a": x, "b": y, "mean_a": q["mean_a"],
+                             "mean_b": q["mean_b"], "p": q["p"], "d_z": q["d"],
+                             "n": q["n"]})
+    cmp_ = pd.DataFrame(rows)
+    if len(cmp_):
+        mk = cmp_["p"].notna()
+        cmp_["p_bonf"] = np.nan
+        cmp_.loc[mk, "p_bonf"] = np.minimum(1.0, cmp_.loc[mk, "p"] * mk.sum())
+    w = a.pivot_table(index="seed", columns="arm", values="HV").dropna()
+    fr = (friedmanchisquare(*[w[c] for c in HYB_ARMS if c in w])
+          if w.shape[1] >= 3 and len(w) >= 2 else None)
+    md += ["## 7. Hybrid ablation: NSGA-III alone, ILP seed only, seed + priority, "
+           "full hybrid "
+           f"(one round, 75-vertex pools, UCB1, N=100, G=150; {n} pools)", "",
+           "PoF_selected: PoF of the solution chosen by the 90% floor rule, "
+           "relative to the ILP optimum. sec_ilp: PICEF (if the chain cap binds) "
+           "+ ILP solve; sec_structures (graph + enumeration) is shared by all arms "
+           "and by the ILP baselines.", "", _md(tab), "",
+           "Friedman on HV over the arms: "
+           + (f"chi2 = {fr.statistic:.2f}, p = {_p(fr.pvalue)}" if fr else "n/a"), "",
+           _md(cmp_.assign(p=cmp_["p"].map(_p), p_bonf=cmp_["p_bonf"].map(_p)))
+           if len(cmp_) else "", ""]
+    js["hybrid_ablation"] = {"table": tab.round(5).to_dict("records"),
+                             "friedman_p": None if fr is None else float(fr.pvalue),
+                             "comparisons": cmp_.round(5).to_dict("records")}
+
+
+# ============================================================
 # REPORT: MAIN EXPERIMENT
 # ============================================================
 
@@ -451,7 +593,16 @@ def report_main(res: Path, md: List[str], js: Dict, texdir: Path) -> None:
           int((c[c["config"].str.contains("nsga")]["F1"]
                < 0.9 * c[c["config"].str.contains("nsga")]["F1_ILP"] - 1e-9).sum()),
           "mean seconds per MOEA clearing":
-          c[c["config"].str.contains("nsga")]["seconds"].mean()}
+          c[c["config"].str.contains("nsga")]["seconds"].mean(),
+          # the myopic ILP's clearing time is graph + enumeration + PICEF
+          # (if the cap binds) + ILP: the overhead every MOEA round also pays
+          "mean seconds per myopic-ILP clearing (graph, enumeration, ILP)":
+          c[c["config"] == ILP]["seconds"].mean(),
+          "ILP overhead as share of an MOEA clearing":
+          c[c["config"] == ILP]["seconds"].mean()
+          / c[c["config"].str.contains("nsga")]["seconds"].mean(),
+          "rounds solved by the HiGHS fallback":
+          int((c["ilp_solver"] == "highs").sum()) if "ilp_solver" in c else np.nan}
     md += ["### 1f. Implementation checks", ""] + \
           [f"- {k}: {v:.4g}" if isinstance(v, float) else f"- {k}: {v}"
            for k, v in st.items()] + [""]
@@ -599,6 +750,7 @@ def report(args) -> None:
     report_tables(res, md, js, out)
     report_ood(Path(args.ood_main), Path(args.ood_ilp), md, js, out)
     report_ablation(res, md, js, out)
+    report_hybrid(res, md, js, out)
     if (res / "manifest.json").exists():
         js["manifest"] = json.loads((res / "manifest.json").read_text())
     (out / "paper_numbers.md").write_text("\n".join(md), encoding="utf-8")
@@ -617,7 +769,8 @@ def report(args) -> None:
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(description="Module 11: remaining experiments + paper numbers")
     ap.add_argument("--steps", nargs="+", default=RUN_STEPS,
-                    choices=["sensitivity", "scalability", "ablation", "report"])
+                    choices=["sensitivity", "scalability", "ablation", "hybrid",
+                             "report"])
     ap.add_argument("--ablation-pools", type=int, default=ABLATION_POOLS)
     ap.add_argument("--jobs", type=int, default=None)
     ap.add_argument("--results", default=RESULTS)
@@ -639,6 +792,8 @@ def main(argv=None) -> None:
                       "--out", args.results, "--jobs", str(sjobs)])
     if "ablation" in args.steps:
         run_ablation(args)
+    if "hybrid" in args.steps:
+        run_hybrid(args)
     if "report" in args.steps:
         report(args)
     print("\n" + "=" * 66 + "\nMODULE 11 COMPLETE\n" + "=" * 66)
