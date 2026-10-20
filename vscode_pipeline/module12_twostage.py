@@ -85,8 +85,17 @@ def paired(a: pd.Series, b: pd.Series) -> Dict:
             "d_z": float(d.mean() / sd) if sd > 0 else 0.0}
 
 
+def _module10():
+    """Module 10 under either file name (module10_experiment(s).py)."""
+    try:
+        import module10_experiment as m10
+    except ImportError:
+        import module10_experiments as m10
+    return m10
+
+
 def build_args(a):
-    import module10_experiment as m10
+    m10 = _module10()
     m10.EXPERIMENTS["twostage"] = {
         "variants": ["base"], "configs": CONFIGS, "taus": a.taus,
         "runs": a.runs, "about": "two-stage ILP baseline (module 12)"}
