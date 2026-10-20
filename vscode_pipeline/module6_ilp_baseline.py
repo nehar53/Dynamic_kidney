@@ -6,7 +6,7 @@ import numpy as np
 from module1_generator import Patient
 from module3_logistics import (
     MAX_CHAIN_LEN, MAX_CYCLE_LEN, ExchangeStructures,
-    build_compatibility_graph, build_exchange_structures, enumerate_cycles,
+    build_compatibility_graph, classify_node, build_exchange_structures, enumerate_cycles,
 )
 
 # ============================================================
@@ -39,6 +39,8 @@ from module3_logistics import (
 # CBC; then SciPy's HiGHS is used, which gives the same optimum.
 
 ILP_TIME_LIMIT = 120       # seconds per solve
+TWO_STAGE_TIME_LIMIT = 60  # stage 2 of the two-stage ILP; if reached, the
+                           # best matching found so far is used (reported)
 
 
 # ============================================================
@@ -240,6 +242,124 @@ def solve_ilp_lexicographic(
 # ============================================================
 # EXACT CHAIN CHECK: PICEF (all chains up to L, no cap)
 # ============================================================
+
+# ============================================================
+# BASELINE 9: TWO-STAGE ILP (fairest maximum matching)
+# ============================================================
+#
+# Stage 1 is the volume-maximising ILP (F1* transplants). Stage 2
+# keeps exactly F1* transplants and minimises fairness instead:
+#   "f3"   F3 alone (high-cPRA access gap)
+#   "sum"  F2/F2_ref + F3/F3_ref + F4/F4_ref, with the values of the
+#          stage-1 matching as references (floored at 0.01), i.e. the
+#          total relative improvement over the volume-optimal matching.
+# With F1 fixed all three objectives are linear or linearisable:
+#   F3, F4  differences of match rates with constant denominators
+#           (|.| via one auxiliary variable each);
+#   F2      Gini of w'_i = w_i + 1 - m_i (integer waits). The sum of
+#           w' is fixed, and |w'_i - w'_j| is linear in m when
+#           w_i != w_j, so only equal-wait pairs need |m_i - m_j|.
+# This is the exact answer to "pick the fairest maximum matching"
+# for these objectives (Section 6, reviewer question "why an MOEA?").
+
+def solve_ilp_two_stage(
+    pool_pairs: List[Patient],
+    edges: Dict,
+    structures: ExchangeStructures,
+    f1_star: float,
+    ref: Tuple[float, float, float],
+    objective: str = "sum",
+    time_limit: int = TWO_STAGE_TIME_LIMIT,
+) -> Tuple[Set[int], Dict]:
+    import pulp
+    t0 = time.time()
+    pts = [p for p in pool_pairs if not p.is_altruistic]
+    if not pts or len(structures) == 0 or f1_star <= 0:
+        return set(), {"seconds": time.time() - t0, "status": "trivial"}
+    n = len(pts)
+    pid = [p.pair_id for p in pts]
+    pos = {q: i for i, q in enumerate(pid)}
+    by_patient: Dict[int, List[int]] = {}
+    for k in range(len(structures)):
+        for v in structures.recipients[k]:
+            if v in pos:
+                by_patient.setdefault(pos[v], []).append(k)
+
+    prob = pulp.LpProblem("KEP_two_stage", pulp.LpMinimize)
+    x = [pulp.LpVariable(f"x_{k}", cat="Binary") for k in range(len(structures))]
+    by_node: Dict[int, List[int]] = {}
+    for k, s in enumerate(structures.nodes):
+        for v in s:
+            by_node.setdefault(v, []).append(k)
+    for v, ks in by_node.items():
+        if len(ks) > 1:
+            prob += pulp.lpSum(x[k] for k in ks) <= 1
+    prob += pulp.lpSum(structures.size(k) * x[k]
+                       for k in range(len(structures))) == round(f1_star)
+    m = [pulp.lpSum(x[k] for k in by_patient.get(i, [])) for i in range(n)]
+
+    terms = []
+    # F3
+    S = [i for i, p in enumerate(pts) if p.is_highly_sensitised]
+    f3 = 0
+    if S:
+        t3 = pulp.LpVariable("t3", lowBound=0)
+        rate = pulp.lpSum(m[i] for i in S) / len(S) - round(f1_star) / n
+        prob += t3 >= rate
+        prob += t3 >= -rate
+        f3 = t3
+    if objective == "f3":
+        prob += f3 if S else 0
+    else:
+        # F4
+        R = [i for i, p in enumerate(pts) if classify_node(p.hospital_node) == 'R']
+        U = [i for i, p in enumerate(pts) if classify_node(p.hospital_node) == 'U']
+        f4 = 0
+        if R and U:
+            t4 = pulp.LpVariable("t4", lowBound=0)
+            diff = (pulp.lpSum(m[i] for i in R) / len(R)
+                    - pulp.lpSum(m[i] for i in U) / len(U))
+            prob += t4 >= diff
+            prob += t4 >= -diff
+            f4 = t4
+        # F2: Gini(w'), w'_i = w_i + 1 - m_i, sum(w') fixed
+        w = np.array([p.waiting_time for p in pts], dtype=float)
+        total = w.sum() + n - round(f1_star)
+        f2 = 0
+        if n >= 2 and total > 0:
+            # sum_{i,j} |w'_i - w'_j| = 2 sum_{i<j} |.|
+            const, coef = 0.0, np.zeros(n)
+            eq_pairs = []
+            for i in range(n):
+                for j in range(i + 1, n):
+                    c = w[i] - w[j]
+                    if c > 0:            # w'_i - w'_j = c - m_i + m_j >= 0
+                        const += c; coef[i] -= 1; coef[j] += 1
+                    elif c < 0:
+                        const -= c; coef[i] += 1; coef[j] -= 1
+                    else:
+                        eq_pairs.append((i, j))
+            d = []
+            for (i, j) in eq_pairs:
+                v = pulp.LpVariable(f"d_{i}_{j}", lowBound=0)
+                prob += v >= m[i] - m[j]
+                prob += v >= m[j] - m[i]
+                d.append(v)
+            num = const + pulp.lpSum(coef[i] * m[i] for i in range(n)) + pulp.lpSum(d)
+            f2 = (2.0 / (2.0 * n * total)) * num
+        r2, r3, r4 = (max(r, 0.01) for r in ref)
+        prob += f2 * (1.0 / r2) + f3 * (1.0 / r3) + f4 * (1.0 / r4)
+
+    if not _cbc_solve(prob, time_limit):
+        return set(), {"seconds": time.time() - t0, "status": "failed"}
+    chosen = [k for k in range(len(structures)) if (x[k].value() or 0) > 0.5]
+    matched: Set[int] = set()
+    for k in chosen:
+        matched.update(structures.nodes[k])
+    secs = time.time() - t0
+    return matched, {"seconds": secs, "structure_indices": chosen,
+                     "status": "time_limit" if secs >= time_limit - 1 else "ok"}
+
 
 def solve_ilp_picef(
     pool_pairs: List[Patient],

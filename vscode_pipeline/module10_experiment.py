@@ -97,7 +97,14 @@ BASELINES: Dict[str, Dict] = {
     # 8. Dickerson et al. (2014): high-cPRA first, then volume
     "dickerson_lex": {"method": "lex", "clearing": "myopic"},
 }
-for _name, _cfg in BASELINES.items():
+# Extra baselines used only by module 12 (not part of the main experiment)
+EXTRA_CONFIGS: Dict[str, Dict] = {
+    # two-stage ILP: maximum transplants, then the fairest maximum matching
+    "twostage_ilp_sum": {"method": "ilp2", "objective": "sum", "clearing": "myopic"},
+    "twostage_ilp_f3": {"method": "ilp2", "objective": "f3", "clearing": "myopic"},
+}
+CONFIGS: Dict[str, Dict] = {**BASELINES, **EXTRA_CONFIGS}
+for _name, _cfg in CONFIGS.items():
     _cfg["name"] = _name
 
 MOEA_CONFIGS = [c for c, v in BASELINES.items() if v["method"] in ("nsga2", "nsga3")]
@@ -110,6 +117,8 @@ SHORT = {
     "dyn_nsga3_linucb_batched": "D-LinUCB batched",
     "myopic_ilp": "Myopic ILP",
     "dickerson_lex": "Dickerson lex",
+    "twostage_ilp_sum": "Two-stage ILP (sum)",
+    "twostage_ilp_f3": "Two-stage ILP (F3)",
 }
 
 # Pre-registered pairwise comparisons. Bonferroni is applied over
@@ -271,9 +280,9 @@ def effective_variant(variant: str, config: str) -> str:
     if not keys:
         return variant
     irrelevant = set(BATCH_KEYS)
-    if config in ("myopic_ilp", "dickerson_lex"):
+    if CONFIGS[config]["method"] in ("ilp", "lex", "ilp2"):
         irrelevant |= SELECTION_KEYS
-    elif BASELINES[config]["clearing"] == "batched":
+    elif CONFIGS[config]["clearing"] == "batched":
         irrelevant = set()
     return "base" if keys <= irrelevant else variant
 
@@ -286,7 +295,7 @@ def run_task(task: Dict) -> Tuple[str, float]:
     """Worker: simulate one trajectory and save it as CSV."""
     t0 = time.time()
     s = variant_settings(task["variant"])
-    cfg = BASELINES[task["config"]]
+    cfg = CONFIGS[task["config"]]
     run_seed = BASE_SEED + task["run"]
 
     builder = (build_compatibility_graph if s["cit_max"] == CIT_MAX_HOURS
@@ -368,7 +377,7 @@ def plan(args) -> List[Dict]:
 
 
 def is_moea(config: str) -> bool:
-    return BASELINES[config]["method"] in ("nsga2", "nsga3")
+    return CONFIGS[config]["method"] in ("nsga2", "nsga3")
 
 
 def estimate_seconds(task: Dict) -> float:
@@ -377,7 +386,7 @@ def estimate_seconds(task: Dict) -> float:
     if not is_moea(task["config"]):
         return task["rounds"] * SEC_PER_ILP_ROUND * (s["n_pairs"] / 75) ** 2
     frac = 1.0
-    if BASELINES[task["config"]]["clearing"] == "batched":
+    if CONFIGS[task["config"]]["clearing"] == "batched":
         frac = 0.4 if s["batch_max_interval"] is None else 0.45
     per = SEC_PER_MOEA_ROUND * (task["gen"] / 150) * (task["pop"] / 100)
     return task["rounds"] * frac * per * (s["n_pairs"] / 75) ** 1.5
@@ -1075,8 +1084,8 @@ def parse_args(argv=None):
     ap.add_argument("--gen", type=int, default=N_GENERATIONS)
     ap.add_argument("--pop", type=int, default=N_POPULATION)
     ap.add_argument("--taus", type=int, nargs="+", default=None)
-    ap.add_argument("--configs", nargs="+", default=list(BASELINES),
-                    choices=list(BASELINES))
+    ap.add_argument("--configs", nargs="+", default=list(CONFIGS),
+                    choices=list(CONFIGS))
     ap.add_argument("--initial-wait-max", type=int, default=INITIAL_WAIT_MAX)
     ap.add_argument("--jobs", type=int, default=DEFAULT_JOBS,
                     help="parallel processes (default: all CPU cores but one)")

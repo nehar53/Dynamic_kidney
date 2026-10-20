@@ -13,7 +13,7 @@ from module5_nsga3_aos import (
     build_context_vector, run_moea_round,
 )
 from module6_ilp_baseline import (solve_ilp_lexicographic, solve_ilp_max_transplants,
-                                  solve_ilp_picef)
+                                  solve_ilp_picef, solve_ilp_two_stage)
 
 # ============================================================
 # MODULE 7: CLEARING STRATEGIES + ONE DYNAMIC TRAJECTORY
@@ -201,7 +201,8 @@ def simulate_trajectory(
 
     config keys
       name      label, e.g. "dyn_nsga3_ucb1_myopic"
-      method    "nsga3" | "nsga2" | "ilp" | "lex"
+      method    "nsga3" | "nsga2" | "ilp" | "lex" | "ilp2"
+      objective (ilp2 only) "sum" | "f3", see module 6
       aos       "ucb1" | "linucb" | "none"
       clearing  "myopic" | "batched"
       dynamic   True: AOS persists + warm start; False: static
@@ -250,6 +251,7 @@ def simulate_trajectory(
             edges = graph_builder(pairs)
             structures = build_exchange_structures(pairs, edges)
             picef_added, picef_failed = 0, False
+            two_stage_status = ""
             if structures.truncated:
                 # chain list was capped: add the chains of the exact
                 # (PICEF) optimum, so that F1_ILP is the true optimum
@@ -265,6 +267,16 @@ def simulate_trajectory(
                 matched = ilp_ids
             elif method == "lex":
                 matched, _, _ = solve_ilp_lexicographic(pairs, edges, structures)
+            elif method == "ilp2":
+                # two-stage ILP: fairest matching among the maximum ones
+                o = compute_all_objectives(ilp_ids, pairs)
+                matched, ts_info = solve_ilp_two_stage(
+                    pairs, edges, structures, f1_ilp,
+                    (o["F2"], o["F3"], o["F4"]),
+                    objective=config.get("objective", "sum"))
+                if f1_ilp > 0 and not matched:      # solver failed
+                    matched = ilp_ids
+                two_stage_status = ts_info.get("status", "")
             else:
                 if not dynamic:                    # static: Paper 1 style
                     aos = make_aos(aos_name, run_seed * 1000 + r)
@@ -300,6 +312,7 @@ def simulate_trajectory(
                 "picef_chains_added": picef_added,
                 "picef_failed": picef_failed,
                 "ilp_solver": ilp_info.get("solver", ""),
+                "two_stage_status": two_stage_status,
                 "F1_ILP": f1_ilp,
                 "F1": obj["F1"], "F2": obj["F2"], "F3": obj["F3"], "F4": obj["F4"],
                 "PoF": pof, "HV": hv, "front_size": front_size,
