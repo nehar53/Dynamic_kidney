@@ -175,6 +175,42 @@ def make_aos(name: str, seed: int):
     return FixedAOS()
 
 
+def _shadow_two_stage(res, pairs, edges, structures, ilp_ids, f1_ilp) -> Dict:
+    """
+    Same-pool comparison (module 12): on the pool of this round, solve
+    the two-stage ILP (both objectives) and report, next to it, the
+    MOEA front solutions with the maximum volume F1 = F1_ILP. Does not
+    change the trajectory.
+    """
+    out: Dict = {}
+    o = compute_all_objectives(ilp_ids, pairs)
+    ref = (o["F2"], o["F3"], o["F4"])
+    out.update({"ilp_F2": o["F2"], "ilp_F3": o["F3"], "ilp_F4": o["F4"]})
+    for obj in ("sum", "f3"):
+        M, info = solve_ilp_two_stage(pairs, edges, structures, f1_ilp, ref,
+                                      objective=obj)
+        q = compute_all_objectives(M if (M or f1_ilp == 0) else ilp_ids, pairs)
+        out.update({f"ts_{obj}_F1": q["F1"], f"ts_{obj}_F2": q["F2"],
+                    f"ts_{obj}_F3": q["F3"], f"ts_{obj}_F4": q["F4"],
+                    f"ts_{obj}_sec": info.get("seconds", np.nan),
+                    f"ts_{obj}_status": info.get("status", "")})
+    F = np.atleast_2d(res.F) if res is not None and len(res.matched_sets) else None
+    if F is None:
+        out["moea_maxvol_n"] = 0
+        return out
+    mask = -F[:, 0] >= f1_ilp - 1e-9
+    out["moea_maxvol_n"] = int(mask.sum())
+    if mask.any():
+        out.update({"moea_maxvol_minF2": float(F[mask, 1].min()),
+                    "moea_maxvol_minF3": float(F[mask, 2].min()),
+                    "moea_maxvol_minF4": float(F[mask, 3].min())})
+        pick, _ = select_solution(res, "floor", 1.0)      # 100% rule
+        q = compute_all_objectives(pick, pairs)
+        out.update({"moea_pick100_F1": q["F1"], "moea_pick100_F2": q["F2"],
+                    "moea_pick100_F3": q["F3"], "moea_pick100_F4": q["F4"]})
+    return out
+
+
 def simulate_trajectory(
     config: Dict,
     tau: int,
@@ -203,6 +239,8 @@ def simulate_trajectory(
       name      label, e.g. "dyn_nsga3_ucb1_myopic"
       method    "nsga3" | "nsga2" | "ilp" | "lex" | "ilp2"
       objective (ilp2 only) "sum" | "f3", see module 6
+      shadow_two_stage (MOEA only) also solve the two-stage ILP on the
+                same pool each round and record both (module 12)
       aos       "ucb1" | "linucb" | "none"
       clearing  "myopic" | "batched"
       dynamic   True: AOS persists + warm start; False: static
@@ -252,6 +290,7 @@ def simulate_trajectory(
             structures = build_exchange_structures(pairs, edges)
             picef_added, picef_failed = 0, False
             two_stage_status = ""
+            shadow: Dict = {}
             if structures.truncated:
                 # chain list was capped: add the chains of the exact
                 # (PICEF) optimum, so that F1_ILP is the true optimum
@@ -294,6 +333,9 @@ def simulate_trajectory(
                 matched, _ = select_solution(res, selection_rule, min_f1_ratio)
                 hv, front_size = res.final_hv, len(res.matched_sets)
                 exact = bool(getattr(res, "exact", False))
+                if config.get("shadow_two_stage"):
+                    shadow = _shadow_two_stage(res, pairs, edges, structures,
+                                               ilp_ids, f1_ilp)
                 arm_counts = res.arm_counts()
                 if dynamic:
                     warm = res.matched_sets
@@ -313,6 +355,7 @@ def simulate_trajectory(
                 "picef_failed": picef_failed,
                 "ilp_solver": ilp_info.get("solver", ""),
                 "two_stage_status": two_stage_status,
+                **shadow,
                 "F1_ILP": f1_ilp,
                 "F1": obj["F1"], "F2": obj["F2"], "F3": obj["F3"], "F4": obj["F4"],
                 "PoF": pof, "HV": hv, "front_size": front_size,

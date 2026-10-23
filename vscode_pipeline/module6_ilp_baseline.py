@@ -41,6 +41,8 @@ from module3_logistics import (
 ILP_TIME_LIMIT = 120       # seconds per solve
 TWO_STAGE_TIME_LIMIT = 60  # stage 2 of the two-stage ILP; if reached, the
                            # best matching found so far is used (reported)
+TIE_EPS_FAIR = 1e-5        # two-stage tie-break: secondary fairness terms
+TIE_EPS_HLA = 1e-7         # two-stage tie-break: HLA weight
 
 
 # ============================================================
@@ -261,6 +263,13 @@ def solve_ilp_lexicographic(
 #           w_i != w_j, so only equal-wait pairs need |m_i - m_j|.
 # This is the exact answer to "pick the fairest maximum matching"
 # for these objectives (Section 6, reviewer question "why an MOEA?").
+# Ties (several equally fair maximum matchings) are broken
+# deterministically by small secondary terms: for "f3" the other two
+# fairness terms (weight TIE_EPS_FAIR), and for both objectives the
+# HLA weight (TIE_EPS_HLA), as in the volume ILP. Both weights are
+# far below the smallest possible change of the primary objective,
+# and CBC is deterministic, so the same pool always gives the same
+# matching.
 
 def solve_ilp_two_stage(
     pool_pairs: List[Patient],
@@ -298,7 +307,6 @@ def solve_ilp_two_stage(
                        for k in range(len(structures))) == round(f1_star)
     m = [pulp.lpSum(x[k] for k in by_patient.get(i, [])) for i in range(n)]
 
-    terms = []
     # F3
     S = [i for i, p in enumerate(pts) if p.is_highly_sensitised]
     f3 = 0
@@ -308,47 +316,50 @@ def solve_ilp_two_stage(
         prob += t3 >= rate
         prob += t3 >= -rate
         f3 = t3
+    # F4
+    R = [i for i, p in enumerate(pts) if classify_node(p.hospital_node) == 'R']
+    U = [i for i, p in enumerate(pts) if classify_node(p.hospital_node) == 'U']
+    f4 = 0
+    if R and U:
+        t4 = pulp.LpVariable("t4", lowBound=0)
+        diff = (pulp.lpSum(m[i] for i in R) / len(R)
+                - pulp.lpSum(m[i] for i in U) / len(U))
+        prob += t4 >= diff
+        prob += t4 >= -diff
+        f4 = t4
+    # F2: Gini(w'), w'_i = w_i + 1 - m_i, sum(w') fixed
+    w = np.array([p.waiting_time for p in pts], dtype=float)
+    total = w.sum() + n - round(f1_star)
+    f2 = 0
+    if n >= 2 and total > 0:
+        # sum_{i,j} |w'_i - w'_j| = 2 sum_{i<j} |.|
+        const, coef = 0.0, np.zeros(n)
+        eq_pairs = []
+        for i in range(n):
+            for j in range(i + 1, n):
+                c = w[i] - w[j]
+                if c > 0:            # w'_i - w'_j = c - m_i + m_j >= 0
+                    const += c; coef[i] -= 1; coef[j] += 1
+                elif c < 0:
+                    const -= c; coef[i] += 1; coef[j] -= 1
+                else:
+                    eq_pairs.append((i, j))
+        d = []
+        for (i, j) in eq_pairs:
+            v = pulp.LpVariable(f"d_{i}_{j}", lowBound=0)
+            prob += v >= m[i] - m[j]
+            prob += v >= m[j] - m[i]
+            d.append(v)
+        num = const + pulp.lpSum(coef[i] * m[i] for i in range(n)) + pulp.lpSum(d)
+        f2 = (2.0 / (2.0 * n * total)) * num
+    r2, r3, r4 = (max(r, 0.01) for r in ref)
+    wmax = max(float(np.max(structures.weight)) if len(structures) else 1.0, 1e-9)
+    hla = pulp.lpSum((structures.weight[k] / wmax) * x[k]
+                     for k in range(len(structures)))
     if objective == "f3":
-        prob += f3 if S else 0
+        prob += f3 + TIE_EPS_FAIR * (f2 * (1.0 / r2) + f4 * (1.0 / r4)) - TIE_EPS_HLA * hla
     else:
-        # F4
-        R = [i for i, p in enumerate(pts) if classify_node(p.hospital_node) == 'R']
-        U = [i for i, p in enumerate(pts) if classify_node(p.hospital_node) == 'U']
-        f4 = 0
-        if R and U:
-            t4 = pulp.LpVariable("t4", lowBound=0)
-            diff = (pulp.lpSum(m[i] for i in R) / len(R)
-                    - pulp.lpSum(m[i] for i in U) / len(U))
-            prob += t4 >= diff
-            prob += t4 >= -diff
-            f4 = t4
-        # F2: Gini(w'), w'_i = w_i + 1 - m_i, sum(w') fixed
-        w = np.array([p.waiting_time for p in pts], dtype=float)
-        total = w.sum() + n - round(f1_star)
-        f2 = 0
-        if n >= 2 and total > 0:
-            # sum_{i,j} |w'_i - w'_j| = 2 sum_{i<j} |.|
-            const, coef = 0.0, np.zeros(n)
-            eq_pairs = []
-            for i in range(n):
-                for j in range(i + 1, n):
-                    c = w[i] - w[j]
-                    if c > 0:            # w'_i - w'_j = c - m_i + m_j >= 0
-                        const += c; coef[i] -= 1; coef[j] += 1
-                    elif c < 0:
-                        const -= c; coef[i] += 1; coef[j] -= 1
-                    else:
-                        eq_pairs.append((i, j))
-            d = []
-            for (i, j) in eq_pairs:
-                v = pulp.LpVariable(f"d_{i}_{j}", lowBound=0)
-                prob += v >= m[i] - m[j]
-                prob += v >= m[j] - m[i]
-                d.append(v)
-            num = const + pulp.lpSum(coef[i] * m[i] for i in range(n)) + pulp.lpSum(d)
-            f2 = (2.0 / (2.0 * n * total)) * num
-        r2, r3, r4 = (max(r, 0.01) for r in ref)
-        prob += f2 * (1.0 / r2) + f3 * (1.0 / r3) + f4 * (1.0 / r4)
+        prob += f2 * (1.0 / r2) + f3 * (1.0 / r3) + f4 * (1.0 / r4) - TIE_EPS_HLA * hla
 
     if not _cbc_solve(prob, time_limit):
         return set(), {"seconds": time.time() - t0, "status": "failed"}

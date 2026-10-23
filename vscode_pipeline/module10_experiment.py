@@ -102,6 +102,11 @@ EXTRA_CONFIGS: Dict[str, Dict] = {
     # two-stage ILP: maximum transplants, then the fairest maximum matching
     "twostage_ilp_sum": {"method": "ilp2", "objective": "sum", "clearing": "myopic"},
     "twostage_ilp_f3": {"method": "ilp2", "objective": "f3", "clearing": "myopic"},
+    # the proposed framework, unchanged, plus a same-pool two-stage
+    # ILP solve in every round (recorded only; module 12)
+    "dyn_nsga3_ucb1_myopic_shadow": {"method": "nsga3", "aos": "ucb1",
+                                     "clearing": "myopic", "dynamic": True,
+                                     "shadow_two_stage": True},
 }
 CONFIGS: Dict[str, Dict] = {**BASELINES, **EXTRA_CONFIGS}
 for _name, _cfg in CONFIGS.items():
@@ -119,6 +124,7 @@ SHORT = {
     "dickerson_lex": "Dickerson lex",
     "twostage_ilp_sum": "Two-stage ILP (sum)",
     "twostage_ilp_f3": "Two-stage ILP (F3)",
+    "dyn_nsga3_ucb1_myopic_shadow": "D-UCB1 myopic (+ same-pool ILP)",
 }
 
 # Pre-registered pairwise comparisons. Bonferroni is applied over
