@@ -264,8 +264,8 @@ def solve_ilp_lexicographic(
 # This is the exact answer to "pick the fairest maximum matching"
 # for these objectives (Section 6, reviewer question "why an MOEA?").
 # Ties (several equally fair maximum matchings) are broken
-# deterministically by small secondary terms: for "f3" the other two
-# fairness terms (weight TIE_EPS_FAIR), and for both objectives the
+# deterministically by small secondary terms: for "f3" the logistics
+# gap F4 (weight TIE_EPS_FAIR), and for both objectives the
 # HLA weight (TIE_EPS_HLA), as in the volume ILP. Both weights are
 # far below the smallest possible change of the primary objective,
 # and CBC is deterministic, so the same pool always gives the same
@@ -327,11 +327,11 @@ def solve_ilp_two_stage(
         prob += t4 >= diff
         prob += t4 >= -diff
         f4 = t4
-    # F2: Gini(w'), w'_i = w_i + 1 - m_i, sum(w') fixed
+    # F2: Gini(w'), w'_i = w_i + 1 - m_i, sum(w') fixed ("sum" only)
     w = np.array([p.waiting_time for p in pts], dtype=float)
     total = w.sum() + n - round(f1_star)
     f2 = 0
-    if n >= 2 and total > 0:
+    if objective != "f3" and n >= 2 and total > 0:
         # sum_{i,j} |w'_i - w'_j| = 2 sum_{i<j} |.|
         const, coef = 0.0, np.zeros(n)
         eq_pairs = []
@@ -357,7 +357,7 @@ def solve_ilp_two_stage(
     hla = pulp.lpSum((structures.weight[k] / wmax) * x[k]
                      for k in range(len(structures)))
     if objective == "f3":
-        prob += f3 + TIE_EPS_FAIR * (f2 * (1.0 / r2) + f4 * (1.0 / r4)) - TIE_EPS_HLA * hla
+        prob += f3 + TIE_EPS_FAIR * f4 * (1.0 / r4) - TIE_EPS_HLA * hla
     else:
         prob += f2 * (1.0 / r2) + f3 * (1.0 / r3) + f4 * (1.0 / r4) - TIE_EPS_HLA * hla
 

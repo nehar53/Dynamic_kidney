@@ -175,7 +175,8 @@ def make_aos(name: str, seed: int):
     return FixedAOS()
 
 
-def _shadow_two_stage(res, pairs, edges, structures, ilp_ids, f1_ilp) -> Dict:
+def _shadow_two_stage(res, pairs, edges, structures, ilp_ids, f1_ilp,
+                      time_limit: Optional[int] = None) -> Dict:
     """
     Same-pool comparison (module 12): on the pool of this round, solve
     the two-stage ILP (both objectives) and report, next to it, the
@@ -187,8 +188,9 @@ def _shadow_two_stage(res, pairs, edges, structures, ilp_ids, f1_ilp) -> Dict:
     ref = (o["F2"], o["F3"], o["F4"])
     out.update({"ilp_F2": o["F2"], "ilp_F3": o["F3"], "ilp_F4": o["F4"]})
     for obj in ("sum", "f3"):
+        kw = {} if time_limit is None else {"time_limit": time_limit}
         M, info = solve_ilp_two_stage(pairs, edges, structures, f1_ilp, ref,
-                                      objective=obj)
+                                      objective=obj, **kw)
         q = compute_all_objectives(M if (M or f1_ilp == 0) else ilp_ids, pairs)
         out.update({f"ts_{obj}_F1": q["F1"], f"ts_{obj}_F2": q["F2"],
                     f"ts_{obj}_F3": q["F3"], f"ts_{obj}_F4": q["F4"],

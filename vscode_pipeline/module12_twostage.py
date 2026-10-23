@@ -50,6 +50,8 @@ from scipy.stats import wilcoxon
 
 STEPS = ["pools", "shadow", "trajectory"]
 POOLS = 30                          # A: seeds 42.. (as in module 11)
+POOL_TIME_LIMIT = 300               # A: stage-2 limit per pool (75-vertex
+                                    # pools are the largest; trajectories: 60 s)
 SHADOW_TAUS = [12]                  # B
 TAUS = [6, 12, 18]
 RUNS = 30
@@ -150,7 +152,7 @@ def _pool_task(seed: int) -> Dict:
     row = {"seed": seed, "F1_ILP": f1, "sec_ilp": sec_ilp, "sec_moea": sec_moea,
            "exact_front": bool(getattr(res, "exact", False)),
            "front_size": len(res.matched_sets)}
-    row.update(_shadow_two_stage(res, P, e, s, ids, f1))
+    row.update(_shadow_two_stage(res, P, e, s, ids, f1, time_limit=POOL_TIME_LIMIT))
     pick90, _ = select_solution(res, "floor", 0.9)          # main rule
     q = compute_all_objectives(pick90, P)
     row.update({"moea_pick90_F1": q["F1"], "moea_pick90_F2": q["F2"],
@@ -271,7 +273,7 @@ def report_pools(a, md: List[str], J: Dict) -> None:
            if len(cmp_) else "n/a", "",
            "Optimality: " + "; ".join(f"{k}: {v:.3f}" for k, v in sh.items()), "",
            "Mean seconds per pool: " + "; ".join(f"{k} {v:.2f}" for k, v in cost.items()), "",
-           "Stage-2 time-limit hits: "
+           f"Stage-2 time-limit hits ({POOL_TIME_LIMIT} s): "
            f"sum {(df['ts_sum_status'] == 'time_limit').mean():.3f}, "
            f"F3 {(df['ts_f3_status'] == 'time_limit').mean():.3f}", ""]
     J["same_pool_one_round"] = {"table": tab.to_dict("records"),
@@ -308,7 +310,7 @@ def report_shadow(m10, sargs, stasks, a, md: List[str], J: Dict) -> None:
         if part.empty:
             continue
         cols = [x for x in part.columns if x.startswith(("ilp_F", "ts_", "moea_"))
-                and part[x].dtype != object]
+                and pd.api.types.is_numeric_dtype(part[x])]
         per_run = part.groupby(["tau", "run"])[cols].mean().reset_index()
         tab, cmp_, _ = same_pool_table(per_run, "run")
         sh = _optimality_shares(part)
