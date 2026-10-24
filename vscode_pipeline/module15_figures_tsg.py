@@ -374,7 +374,7 @@ def tables(runs: pd.DataFrame, ood: pd.DataFrame, taus, out: Path, n_runs: int):
                          "each, $\\tau = 12$, 25 rounds (mean $\\pm$ sd). $F_4$ is not "
                          "reported (hospitals are random on PrefLib).", "tab:ood_tsg", wide=False)
         for c in order:                             # PrefLib config names -> labels
-            txt = txt.replace(f"\n{c} &", f"\n{m14.NAMES[c]} &")
+            txt = txt.replace(f"\n{c} &", "\n" + m14.NAMES[c].replace("rho=0.8", "$\\rho = 0.8$") + " &")
         (out / "tab_ood_tsg.tex").write_text(txt, encoding="utf-8")
         written.append(out / "tab_ood_tsg.tex")
     for p in written:
