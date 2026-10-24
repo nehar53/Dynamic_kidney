@@ -75,6 +75,7 @@ TSG = ["tsg_nsga3_ucb1_myopic", "tsg_nsga3_linucb_myopic",
 OLD = ["dyn_nsga3_ucb1_myopic", "dyn_nsga3_linucb_myopic",
        "dyn_nsga3_ucb1_batched", "dyn_nsga3_linucb_batched"]
 ILP, LEX = "myopic_ilp", "dickerson_lex"
+STATIC = ["static_nsga2_ucb1", "static_nsga3_fixed"]   # Paper 1 style baselines
 TS_SUM, TS_F3 = "twostage_ilp_sum", "twostage_ilp_f3"
 
 NEW_CONFIGS: Dict[str, Dict] = {
@@ -99,6 +100,8 @@ NAMES = {
     ("dyn_nsga3_ucb1_batched", "base"): "Old UCB1 batched",
     ("dyn_nsga3_linucb_batched", "base"): "Old LinUCB batched",
     (ILP, "base"): "Myopic ILP", (LEX, "base"): "Dickerson lex",
+    ("static_nsga2_ucb1", "base"): "Static NSGA-II + UCB1",
+    ("static_nsga3_fixed", "base"): "Static NSGA-III fixed",
     (TS_SUM, "base"): "Two-stage ILP (sum)", (TS_F3, "base"): "Two-stage ILP (F3)",
     ("tsg_nsga3_ucb1_myopic", "score100"): "TSG UCB1 myopic, rho=1.0",
     ("tsg_nsga3_ucb1_myopic", "score80"): "TSG UCB1 myopic, rho=0.8",
@@ -117,6 +120,8 @@ MAIN_PAIRS = [
     (("tsg_nsga3_ucb1_myopic", "score90"), (TS_F3, "base")),
     (("tsg_nsga3_ucb1_myopic", "score90"), (ILP, "base")),
     (("tsg_nsga3_ucb1_myopic", "score90"), (LEX, "base")),
+    (("tsg_nsga3_ucb1_myopic", "score90"), ("static_nsga2_ucb1", "base")),
+    (("tsg_nsga3_ucb1_myopic", "score90"), ("static_nsga3_fixed", "base")),
     (("tsg_nsga3_ucb1_myopic", "score90"), ("tsg_nsga3_ucb1_batched", "score90")),
     (("tsg_nsga3_linucb_myopic", "score90"), ("tsg_nsga3_linucb_batched", "score90")),
 ]
@@ -325,7 +330,7 @@ def build_args(a):
     E = m10.EXPERIMENTS
     E["tsg_main"] = {"variants": ["score90"], "configs": TSG, "taus": a.taus,
                      "runs": a.runs, "about": "two-stage-ILP-guided NSGA-III (module 13)"}
-    E["tsg_ref"] = {"variants": ["base"], "configs": OLD + [ILP, LEX, TS_SUM, TS_F3],
+    E["tsg_ref"] = {"variants": ["base"], "configs": OLD + STATIC + [ILP, LEX, TS_SUM, TS_F3],
                     "taus": a.taus, "runs": a.runs,
                     "about": "reference runs (modules 10 and 12)"}
     E["tsg_select"] = {"variants": ["score100", "score80", "base"],
@@ -487,6 +492,7 @@ def write_report(m10, groups, a) -> None:
         md += ["not available (step main)", ""]
     else:
         order = [(c, "score90") for c in TSG] + [(c, "base") for c in OLD] + \
+                [(c, "base") for c in STATIC] + \
                 [(TS_SUM, "base"), (TS_F3, "base"), (ILP, "base"), (LEX, "base")]
         for tau in sorted(runs["tau"].unique()):
             t, c = _table(runs, order, tau), _tests(runs, MAIN_PAIRS, tau)
