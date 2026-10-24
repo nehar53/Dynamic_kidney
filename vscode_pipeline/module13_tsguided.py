@@ -297,7 +297,21 @@ def _task13(task: Dict):
                 df.loc[idx, col] = d[col].to_numpy()
             tmp = Path(path).with_suffix(".tmp")
             df.to_csv(tmp, index=False)
-            tmp.replace(path)
+            # OneDrive / antivirus can lock the CSV just written by
+            # module 10 for a few seconds: retry, and if it stays locked
+            # keep the trajectory without the diagnostic columns
+            for wait in [0.5, 1, 2, 4, 8, 15, 30]:
+                try:
+                    tmp.replace(path)
+                    break
+                except PermissionError:
+                    time.sleep(wait)
+            else:
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+                print(f"NOTE: {path} locked; saved without diagnostics", flush=True)
     return path, secs
 
 
