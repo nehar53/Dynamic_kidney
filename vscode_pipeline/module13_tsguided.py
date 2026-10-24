@@ -125,6 +125,7 @@ SELECT_ROWS = [("tsg_nsga3_ucb1_myopic", "score90"), ("tsg_nsga3_ucb1_myopic", "
                ("dyn_nsga3_ucb1_myopic", "score90"), ("dyn_nsga3_ucb1_myopic", "base"),
                (TS_SUM, "base"), (ILP, "base")]
 SELECT_PAIRS = [(("tsg_nsga3_ucb1_myopic", "score100"), (TS_SUM, "base")),
+                (("tsg_nsga3_ucb1_myopic", "score80"), (TS_SUM, "base")),
                 (("tsg_nsga3_ucb1_myopic", "score90"), ("tsg_nsga3_ucb1_myopic", "base")),
                 (("tsg_nsga3_ucb1_myopic", "score90"), ("dyn_nsga3_ucb1_myopic", "score90")),
                 (("dyn_nsga3_ucb1_myopic", "score90"), ("dyn_nsga3_ucb1_myopic", "base"))]
@@ -388,7 +389,9 @@ def paired(a: pd.Series, b: pd.Series) -> Dict:
 
 
 def _load(m10, tasks):
-    tasks = [t for t in tasks if Path(t["path"]).exists()]
+    seen = set()                                 # one copy of each trajectory
+    tasks = [t for t in tasks if Path(t["path"]).exists()
+             and not ((t["variant"], t["path"]) in seen or seen.add((t["variant"], t["path"])))]
     if not tasks:
         return pd.DataFrame(), pd.DataFrame()
     rounds = m10.collect(tasks)
@@ -503,7 +506,8 @@ def write_report(m10, groups, a) -> None:
                    "", _md(d), ""]
 
     md += ["## B. Selection rule and guide (tau = 12)", ""]
-    _, sruns = _load(m10, groups["select"][1])
+    # rho = 0.9 runs belong to step main: include them here
+    _, sruns = _load(m10, groups["select"][1] + groups["main"][1])
     if not len(sruns):
         md += ["not available (step select)", ""]
     else:
