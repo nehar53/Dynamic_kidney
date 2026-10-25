@@ -14,7 +14,7 @@
 
 {\Large\bfseries Fairness in dynamic kidney exchange: a research summary}\\[2pt]
 {\small Dr Yousef Amer (Adelaide University, Australia) and Neha (Manipal University Jaipur, India).
-Prepared for potential collaborators at Universit\'e PSL. October 2026.}
+Prepared for potential collaborators. October 2026.}
 
 \section*{1. Overview}
 We study how a kidney exchange programme can match patients fairly over time
@@ -64,9 +64,8 @@ its value in the volume-maximising matching). We use it as a benchmark.\\
 searches for the Pareto front in each round. An exact ILP solution seeds the search
 and receives priority in the repair step, and an external archive keeps every
 non-dominated matching. Small rounds are solved exactly by enumeration. A bandit
-(UCB1 or LinUCB) adapts the mutation rate. Two guidance variants are under
-evaluation: guidance by the volume-maximising ILP and guidance by the two-stage ILP.
-The choice between them is still under discussion.\\
+(UCB1 or LinUCB) adapts the mutation rate. The guiding solution is the
+volume-maximising ILP matching, so the front always contains it.\\
 \textbf{Selection rule.} From the front, the implemented matching must keep at least
 90\% of $F_1^*$ (other floors are tested). The Price of Fairness (PoF) is the
 percentage of $F_1^*$ given up in a round.\\
@@ -129,41 +128,16 @@ of a realistic validation study with programme data. \\
 \bottomrule
 \end{tabularx}
 
-\section*{6. Proposed seed project (PSL Global Seed Fund)}
-\textbf{Aim.} Start a joint line of work on fair, dynamic kidney exchange and prepare
-a larger joint grant application.\\
-\textbf{Activities (April 2027 -- March 2028).} A 4--6 week research visit to the PSL
-partner's laboratory; a one-day joint workshop in Paris (or hybrid) with PSL and
-Adelaide researchers; monthly online meetings; a shared code and data repository.\\
-\textbf{Expected outcomes.} At least one joint paper; a joint application to a larger
-scheme (for example a European or bilateral programme); a reusable open simulation
-benchmark for dynamic kidney exchange.\\
-\textbf{Indicative budget (to be adapted to PSL's eligible costs).}
-\begin{tabularx}{\textwidth}{@{}Xr@{}}
-\toprule
-Item & Indicative amount \\
-\midrule
-Research visit to Paris, 4--6 weeks (travel and accommodation) & \texteuro\,5{,}500 \\
-Joint workshop (venue, travel of invited participants) & \texteuro\,3{,}000 \\
-Early-career researcher support (short visit or internship) & \texteuro\,2{,}500 \\
-Dissemination (open-access fees, conference registration) & \texteuro\,1{,}000 \\
-\midrule
-Total (maximum \texteuro\,12{,}000) & \texteuro\,12{,}000 \\
-\bottomrule
-\end{tabularx}\\[3pt]
-\textbf{Value for PSL.} Complementarity: our team brings a calibrated dynamic
-simulation, operational constraints and a tested optimisation pipeline. PSL partners
-bring expertise in market design, social choice or exact multi-objective
-optimisation. The project links PSL with Adelaide University and Manipal
-University Jaipur.\\
-\textbf{Early-career involvement.} Early-career researchers on both sides would take
-part in the visit, the workshop and the joint paper.
-
-\section*{7. The ask and contact}
-Would you consider leading a PSL Global Seed Fund application with Adelaide University
-as the international partner? The current call closes on 8 December 2026 (12:00 Paris
-time). If that is too soon, we would aim for the next call (Spring 2027).
-We would prepare the scientific content and the draft application with you.\\
+\section*{6. What we bring and possible next steps}
+\textbf{What we bring.} A calibrated dynamic simulation of a kidney exchange pool with
+operational constraints; an exact ILP and two-stage ILP baseline; a tested
+multi-objective optimisation pipeline with paired-run statistics; and open questions
+that sit between optimisation, market design and fairness.\\
+\textbf{Possible joint work.} Depending on the partner's interests: a short research
+visit, a joint workshop, regular online meetings and a joint paper. If there is mutual
+interest, we would explore a small seed-funding scheme (for example the PSL Global Seed
+Fund, with Adelaide University as the international partner) to start the
+collaboration, and later a larger joint application.\\
 \textbf{Contact:} Dr Yousef Amer, Adelaide University,
 \href{mailto:yousef.amer@adelaide.edu.au}{yousef.amer@adelaide.edu.au}.
 
