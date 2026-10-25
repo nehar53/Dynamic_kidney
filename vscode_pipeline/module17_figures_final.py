@@ -347,6 +347,14 @@ def fig_three_levels(lv, out):
     _save(fig, out, "fig3_three_levels")
 
 
+def exact_upto(d: pd.DataFrame, m: str, L: int) -> pd.Series:
+    """Best exact two-stage value over the volumes solved at levels >= L
+    (each level's V, up to F1*): the like-for-like counterpart of the
+    front's best solution with F1 >= V."""
+    cols = [f"exact_{m}_{k}" for k in LEVELS if k >= L and f"exact_{m}_{k}" in d]
+    return d[cols].min(axis=1, skipna=True) if cols else pd.Series(np.nan, index=d.index)
+
+
 def fig_tradeoff(pools, rounds, out, tau=12):
     panels = []
     if len(pools):
@@ -364,11 +372,15 @@ def fig_tradeoff(pools, rounds, out, tau=12):
             ax = axes[i][j]
             for kind, col, mk, ls, name in [("best", BLUE, "o", "-", "Front best ($F_1 \\geq V$)"),
                                             ("pick", VIOLET, "s", "--", "Floor-rule pick at $\\rho$"),
-                                            ("exact", AQUA, "D", "-", "Exact two-stage ILP at $V$")]:
+                                            ("exact", AQUA, "D", "-",
+                                             "Exact two-stage ILP, best of solved volumes $\\geq V$")]:
                 ys, es = [], []
                 for L in LEVELS:
                     col_name = f"{kind}_{m}_{L}"
-                    v = d[col_name] if col_name in d else pd.Series(dtype=float)
+                    if kind == "exact":
+                        v = exact_upto(d, m, L)
+                    else:
+                        v = d[col_name] if col_name in d else pd.Series(dtype=float)
                     ys.append(v.mean())
                     es.append(_ci(v))
                 ax.errorbar(LEVELS, ys, yerr=es, color=col, marker=mk, ls=ls, ms=4,
@@ -381,7 +393,12 @@ def fig_tradeoff(pools, rounds, out, tau=12):
             if i == len(panels) - 1:
                 ax.set_xlabel("Volume level $\\rho$ (% of $F_1^*$)")
             if j == 0:
-                ax.set_title(title, loc="left", fontsize=7.5)
+                tl = 0.0
+                cols = [f"exact_status_{L}" for L in LEVELS if L < 100 and f"exact_status_{L}" in d]
+                if cols:
+                    tl = float((d[cols] == "time_limit").to_numpy().mean())
+                ax.set_title(f"{title}; exact solves time-limited: {tl:.0%}", loc="left",
+                             fontsize=7.5)
     _legend_below(fig, axes[0][0], ncol=4, dy=-0.05, rect_bottom=0.05)
     _save(fig, out, "fig4_tradeoff_levels")
 
@@ -460,7 +477,7 @@ def _forest(runs, pair_col, a_key, bases, metrics, title, out, name, select):
         ax.axvline(0, color="#8a8984", lw=0.8, zorder=0)
         ax.set_title(ML[met])
         ax.set_xlabel("Framework $-$ baseline")
-        ax.xaxis.set_major_locator(MaxNLocator(nbins=4))
+        ax.xaxis.set_major_locator(MaxNLocator(nbins=3))
         ax.grid(axis="y", visible=False)
     axes[0][0].set_yticks(range(len(bases)))
     axes[0][0].set_yticklabels([SPEC[k][0] for k in bases])
@@ -567,18 +584,22 @@ def tables(runs, lv, pools, trounds, ood, taus, out, n_runs, results):
             for L in LEVELS:
                 def mm(c):
                     return f"{d[c].mean():.3f}" if c in d and d[c].notna().any() else "--"
+
+                def em(m, L):
+                    v = exact_upto(d, m, L)
+                    return f"{v.mean():.3f}" if v.notna().any() else "--"
                 ex = d.get(f"exact_status_{L}", pd.Series(dtype=str))
                 body.append([f"{L}\\%", f"{d[f'opt_{L}'].mean():.1f}" if f"opt_{L}" in d else "--",
-                             mm(f"best_score_{L}"), mm(f"pick_score_{L}"), mm(f"exact_score_{L}"),
-                             mm(f"best_F3_{L}"), mm(f"exact_F3_{L}"),
+                             mm(f"best_score_{L}"), mm(f"pick_score_{L}"), em("score", L),
+                             mm(f"best_F3_{L}"), em("F3", L),
                              f"{(ex == 'time_limit').mean():.2f}" if len(ex) else "--"])
         (out / "tab_tradeoff.tex").write_text(_tex(
-            ["Level $\\rho$", "Options", "Front best", "Rule pick", "Exact ILP at $V$",
+            ["Level $\\rho$", "Options", "Front best", "Rule pick", "Exact ILP, volumes $\\ge V$",
              "Front best $F_3$", "Exact $F_3$", "ILP time limit"], body,
             "Fairness available below maximum volume. Level $\\rho$ allows $V = \\lceil \\rho "
             "F_1^* \\rceil$ or more transplants. Options: distinct front solutions with "
             "$F_1 \\ge V$. Scores as in Table~\\ref{tab:three_levels} (lower = fairer); "
-            "exact ILP: two-stage stage 2 at exactly $V$ transplants (time-limited).",
+            "exact ILP: best two-stage stage-2 solution among the volumes solved from $V$ up to $F_1^*$ (one solve per level, time-limited; share of solves at the limit in the last column).",
             "tab:tradeoff", wide=True), encoding="utf-8")
         written.append("tab_tradeoff.tex")
     # computational cost
