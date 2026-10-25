@@ -403,7 +403,11 @@ def fig_tradeoff(pools, rounds, out, tau=12):
     _save(fig, out, "fig4_tradeoff_levels")
 
 
+SELECT_RUNS = 30            # selection-rule variants were run for runs 0..29
+
+
 def fig_selection(runs, taus, out):
+    runs = runs[runs["run"] < SELECT_RUNS]          # same paired runs for every point
     pts = [(FRAME, "floor100"), (FRAME, "base"), (FRAME, "floor80"), (FRAME, "compromise")]
     refs = [("twostage_ilp_sum", "base"), ("twostage_ilp_f3", "base"),
             ("myopic_ilp", "base"), ("dickerson_lex", "base")]
@@ -494,9 +498,14 @@ def _forest(runs, pair_col, a_key, bases, metrics, title, out, name, select):
 # LATEX TABLES
 # ============================================================
 
+def _num(x, d):
+    v = f"{x:.{d}f}"
+    return v[1:] if v.startswith("-") and float(v) == 0 else v    # no "-0.00"
+
+
 def _fmt(g, d):
     g = pd.Series(g).dropna()
-    return "--" if not len(g) else f"{g.mean():.{d}f} $\\pm$ {g.std():.{d}f}"
+    return "--" if not len(g) else f"{_num(g.mean(), d)} $\\pm$ {_num(g.std(), d)}"
 
 
 def _tex(header: List[str], body: List[List[str]], caption, label, wide=True, groups=None):
@@ -507,8 +516,10 @@ def _tex(header: List[str], body: List[List[str]], caption, label, wide=True, gr
            " & ".join(header) + " \\\\", "\\midrule"]
     for row in body:
         if isinstance(row, str):                      # group heading
+            row = row.replace("%", "\\%").replace("\\\\%", "\\%")
             out.append(f"\\multicolumn{{{len(header)}}}{{@{{}}l}}{{\\textit{{{row}}}}} \\\\")
         else:
+            row = [c.replace("%", "\\%").replace("\\\\%", "\\%") for c in row]
             out.append(" & ".join(row) + " \\\\")
     out += ["\\bottomrule", "\\end{tabular}", f"\\end{{{env}}}"]
     return "\n".join(out)
@@ -544,12 +555,13 @@ def tables(runs, lv, pools, trounds, ood, taus, out, n_runs, results):
             for k in [(FRAME, "floor100"), (FRAME, "base"), (FRAME, "floor80"),
                       (FRAME, "compromise"), ("twostage_ilp_sum", "base"), ("myopic_ilp", "base")]:
                 g = _sel(runs, k, tau)
+                g = g[g["run"] < SELECT_RUNS]           # same paired runs for every row
                 if len(g):
                     body.append([SPEC[k][0]] + [_fmt(g[c], d) for c, _, d in cols])
         if body:
             (out / "tab_select.tex").write_text(_tex(
-                head, body, "Selection rules over full trajectories (mean $\\pm$ sd, 30 paired "
-                "runs) compared with the two-stage ILP and the myopic ILP.", "tab:select"),
+                head, body, "Selection rules over full trajectories (mean $\\pm$ sd over the same 30 "
+                "paired runs for every row) compared with the two-stage ILP and the myopic ILP.", "tab:select"),
                 encoding="utf-8")
             written.append("tab_select.tex")
     if len(lv):
@@ -630,14 +642,18 @@ def tables(runs, lv, pools, trounds, ood, taus, out, n_runs, results):
                  rs((FRAME, "base")), os_("dyn_nsga3_ucb1_myopic")])
     crow.append(["Dickerson lex", "--", "--", rs(("dickerson_lex", "base")), os_("dickerson_lex")])
     if len(trounds):
-        crow.append(["Exact ILP at all levels (Section trade-off)", "--",
-                     f"{(trounds['ts_status'] == 'time_limit').mean():.2f}",
+        lv_cols = [f"exact_status_{L}" for L in LEVELS if L < 100 and f"exact_status_{L}" in trounds]
+        lv_share = (trounds[lv_cols] == "time_limit").to_numpy()
+        lv_share = lv_share[trounds[lv_cols].notna().to_numpy()].mean() if lv_cols else np.nan
+        crow.append(["Exact two-stage ILP at lower volume levels (all levels per round)", "--",
+                     f"{lv_share:.2f}",
                      f"{trounds['exact_sec_total'].mean():.2f}", "--"])
     (out / "tab_cost.tex").write_text(_tex(
         ["Method", "Identical pool (s)", "Time-limit share", "Trajectory s/round ($\\tau=12$)",
          "PrefLib s/round"], crow,
         "Computational cost. Identical pool: one round on a 75-vertex pool (stage-2 limit "
-        "300 s). Trajectory: mean seconds per cleared round (stage-2 limit 60 s). All on one "
+        "300 s). Lower volume levels: one stage-2 solve per level (limit 60 s; share of "
+        "these solves at the limit shown). Trajectory: mean seconds per cleared round (stage-2 limit 60 s). All on one "
         "core; times include building the compatibility graph only where stated in the text.",
         "tab:cost", wide=True), encoding="utf-8")
     written.append("tab_cost.tex")
