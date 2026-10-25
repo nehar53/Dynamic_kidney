@@ -58,7 +58,7 @@ GREY = "#5f5e5a"
 
 # config -> label, colour, marker, line style (variant 'base' unless keyed)
 SPEC: Dict[Tuple[str, str], Tuple[str, str, str, str]] = {
-    (FRAME, "base"): ("Framework UCB1 (90% floor)", BLUE, "o", "-"),
+    (FRAME, "base"): ("Framework, 90% floor", BLUE, "o", "-"),
     ("dyn_nsga3_linucb_myopic", "base"): ("Framework LinUCB", VIOLET, "s", "-"),
     ("dyn_nsga3_ucb1_batched", "base"): ("Framework UCB1 batched", BLUE, "o", "--"),
     ("dyn_nsga3_linucb_batched", "base"): ("Framework LinUCB batched", VIOLET, "s", "--"),
@@ -70,7 +70,7 @@ SPEC: Dict[Tuple[str, str], Tuple[str, str, str, str]] = {
     ("twostage_ilp_sum", "base"): ("Two-stage ILP (sum)", AQUA, "D", "-"),
     ("twostage_ilp_f3", "base"): ("Two-stage ILP (F3)", AQUA, "d", "--"),
     ("myopic_ilp", "base"): ("Myopic ILP", GREY, "*", "-"),
-    ("dickerson_lex", "base"): ("Dickerson lex", YELLOW, "h", "-"),
+    ("dickerson_lex", "base"): ("Lexicographic rule", YELLOW, "h", "-"),
 }
 MAIN_KEYS = [(FRAME, "base"), ("dyn_nsga3_linucb_myopic", "base"),
              ("dyn_nsga3_ucb1_batched", "base"), ("dyn_nsga3_linucb_batched", "base"),
@@ -213,7 +213,7 @@ def load_levels(a, m10, runs) -> pd.DataFrame:
                         ("Framework, 90% floor", (FRAME, "base"))]:
             g = _sel(runs, key, 12)
             for _, r in g.iterrows():
-                rows.append({"level": "C. full trajectories (tau 12)", "method": nm,
+                rows.append({"level": "C. full trajectories ($\\tau$ = 12)", "method": nm,
                              "unit": r["run"], "F2": r["mean_F2"], "F3": r["mean_F3"],
                              "F4": r["mean_F4"], "score": np.nan,
                              "transplants": r["total_transplants"]})
@@ -317,7 +317,7 @@ def fig_three_levels(lv, out):
     if not len(lv):
         return
     levels = [l for l in ["A. identical pools", "B. fixed trajectories",
-                          "C. full trajectories (tau 12)"] if l in set(lv["level"])]
+                          "C. full trajectories ($\\tau$ = 12)"] if l in set(lv["level"])]
     mets = ["F2", "F3", "F4"]
     fig, axes = plt.subplots(len(levels), 3, figsize=(7.16, 1.35 * len(levels) + 0.6),
                              squeeze=False)
@@ -338,12 +338,7 @@ def fig_three_levels(lv, out):
             if i == len(levels) - 1:
                 ax.set_xlabel(ML[met] + " (lower = fairer)")
         axes[i][0].set_title(lev, loc="left", fontsize=7.5, fontweight="bold")
-    fig.text(0.5, -0.01, "Mean and 95% CI. A: 30 pools, one round; B: every round of the "
-             "framework's trajectories (per-run means, same pools for all methods); C: each "
-             "method clears its own pool sequence (per-run means). Maximum-volume methods: "
-             "volume ILP, two-stage ILP, 100% pick/floor.", ha="center", fontsize=6.3,
-             color="#5f5e5a", wrap=True)
-    fig.tight_layout(rect=(0, 0.03, 1, 1))
+    fig.tight_layout()
     _save(fig, out, "fig3_three_levels")
 
 
@@ -486,10 +481,7 @@ def _forest(runs, pair_col, a_key, bases, metrics, title, out, name, select):
     axes[0][0].set_yticks(range(len(bases)))
     axes[0][0].set_yticklabels([SPEC[k][0] for k in bases])
     axes[0][0].invert_yaxis()
-    fig.suptitle(title, fontsize=8, y=1.0)
-    fig.text(0.5, -0.02, "Negative = framework lower (better) on every metric shown. Filled: "
-             "paired Wilcoxon significant after Bonferroni (p < 0.05); bars: 95% CI.",
-             ha="center", fontsize=6.5, color="#5f5e5a")
+    # title and legend note go in the LaTeX caption (IEEE style)
     fig.tight_layout()
     _save(fig, out, name)
 
@@ -640,7 +632,7 @@ def tables(runs, lv, pools, trounds, ood, taus, out, n_runs, results):
                  rs(("twostage_ilp_f3", "base")), os_("twostage_ilp_f3")])
     crow.append(["Framework (NSGA-III + AOS, incl. ILP)", ps("sec_moea"), "--",
                  rs((FRAME, "base")), os_("dyn_nsga3_ucb1_myopic")])
-    crow.append(["Dickerson lex", "--", "--", rs(("dickerson_lex", "base")), os_("dickerson_lex")])
+    crow.append(["Lexicographic rule", "--", "--", rs(("dickerson_lex", "base")), os_("dickerson_lex")])
     if len(trounds):
         lv_cols = [f"exact_status_{L}" for L in LEVELS if L < 100 and f"exact_status_{L}" in trounds]
         lv_share = (trounds[lv_cols] == "time_limit").to_numpy()
