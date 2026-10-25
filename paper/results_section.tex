@@ -1,0 +1,714 @@
+
+%% ============================================================
+\section{Results and Discussion}
+\label{sec:results}
+%% ============================================================
+
+Table~\ref{tab:main} summarizes the main experiment. All comparisons
+are paired Wilcoxon tests over 100 runs with Bonferroni correction
+unless stated otherwise. In 48\% of cleared rounds the feasible set
+was small enough to enumerate exactly, the chain cap bound in 9.6\%,
+and no implemented matching fell below the 90\% floor.
+
+\begin{table*}[!t]
+\centering
+\caption{Trajectory results over 25 rounds (mean $\pm$ sd over 100
+paired runs). $\Delta$: transplants lost against the myopic ILP.
+High-cPRA lost: highly sensitized patients who withdrew.
+D-/S-: dynamic/static NSGA.}
+\label{tab:main}
+\footnotesize
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{@{}cl cccccccc@{}}
+\toprule
+$\tau$ & Configuration & PoF (\%) & $\Delta$ (\%) & Transplants
+ & High-cPRA tx & $F_2$ & $F_3$ & $F_4$ & High-cPRA lost \\
+\midrule
+\multirow{10}{*}{6}
+ & S-NSGA-II + UCB1   & 1.63 $\pm$ 0.68 & $-$0.03 $\pm$ 1.74 & 173.6 $\pm$ 15.5 & 49.5 $\pm$ 6.9 & 0.354 & 0.060 & 0.097 & 25.6 $\pm$ 4.3 \\
+ & S-NSGA-III fixed   & 1.56 $\pm$ 0.67 & $-$0.14 $\pm$ 1.50 & 173.8 $\pm$ 15.5 & 49.6 $\pm$ 7.0 & 0.356 & 0.061 & 0.099 & 25.6 $\pm$ 4.5 \\
+ & D-UCB1 myopic      & 1.60 $\pm$ 0.61 & $-$0.06 $\pm$ 1.55 & 173.7 $\pm$ 15.1 & 49.5 $\pm$ 6.9 & 0.355 & 0.060 & 0.098 & 25.5 $\pm$ 4.4 \\
+ & D-LinUCB myopic    & 1.59 $\pm$ 0.63 & $-$0.05 $\pm$ 1.74 & 173.7 $\pm$ 15.4 & 49.4 $\pm$ 6.9 & 0.355 & 0.060 & 0.097 & 25.7 $\pm$ 4.3 \\
+ & D-UCB1 batched     & --              & 100.0              & 0.0              & 0.0            & --    & --    & --    & 65.6 $\pm$ 7.8 \\
+ & D-LinUCB batched   & --              & 100.0              & 0.0              & 0.0            & --    & --    & --    & 65.6 $\pm$ 7.8 \\
+ & Myopic ILP         & 0.00            & 0.00               & 173.6 $\pm$ 15.4 & 48.8 $\pm$ 7.1 & 0.369 & 0.077 & 0.137 & 26.3 $\pm$ 4.7 \\
+ & Dickerson lex.     & 1.76 $\pm$ 1.27 & 0.15 $\pm$ 1.49    & 173.3 $\pm$ 15.5 & 59.2 $\pm$ 8.0 & 0.368 & 0.095 & 0.135 & 17.5 $\pm$ 4.5 \\
+ & Two-stage (sum)    & 0.00            & $-$0.82 $\pm$ 1.48 & 175.0 $\pm$ 15.6 & 51.2 $\pm$ 7.5 & 0.356 & 0.058 & 0.087 & 24.2 $\pm$ 4.2 \\
+ & Two-stage ($F_3$)  & 0.00            & $-$0.14 $\pm$ 1.49 & 173.8 $\pm$ 15.3 & 51.4 $\pm$ 7.3 & 0.369 & 0.057 & 0.096 & 24.0 $\pm$ 4.2 \\
+\midrule
+\multirow{10}{*}{12}
+ & S-NSGA-II + UCB1   & 1.86 $\pm$ 0.71 & 0.17 $\pm$ 1.31   & 181.4 $\pm$ 15.9 & 54.4 $\pm$ 7.7 & 0.378 & 0.038 & 0.064 & 13.7 $\pm$ 2.8 \\
+ & S-NSGA-III fixed   & 1.76 $\pm$ 0.76 & 0.16 $\pm$ 1.27   & 181.4 $\pm$ 15.9 & 54.3 $\pm$ 7.4 & 0.379 & 0.040 & 0.065 & 13.7 $\pm$ 3.1 \\
+ & D-UCB1 myopic      & 1.81 $\pm$ 0.75 & 0.16 $\pm$ 1.26   & 181.4 $\pm$ 15.8 & 54.5 $\pm$ 7.9 & 0.379 & 0.039 & 0.061 & 13.6 $\pm$ 3.2 \\
+ & D-LinUCB myopic    & 1.83 $\pm$ 0.71 & 0.15 $\pm$ 1.33   & 181.5 $\pm$ 15.9 & 54.2 $\pm$ 7.5 & 0.378 & 0.039 & 0.063 & 13.8 $\pm$ 3.0 \\
+ & D-UCB1 batched     & 8.36 $\pm$ 1.02 & 24.39 $\pm$ 14.58 & 138.0 $\pm$ 30.9 & 41.6 $\pm$ 11.0 & 0.349 & 0.033 & 0.057 & 18.1 $\pm$ 4.4 \\
+ & D-LinUCB batched   & 8.37 $\pm$ 1.01 & 23.32 $\pm$ 14.58 & 140.0 $\pm$ 31.3 & 42.2 $\pm$ 11.0 & 0.348 & 0.033 & 0.050 & 17.9 $\pm$ 4.4 \\
+ & Myopic ILP         & 0.00            & 0.00              & 181.7 $\pm$ 15.7 & 53.9 $\pm$ 7.7 & 0.390 & 0.051 & 0.092 & 14.4 $\pm$ 3.3 \\
+ & Dickerson lex.     & 2.12 $\pm$ 1.38 & 0.51 $\pm$ 1.55   & 180.8 $\pm$ 15.5 & 65.1 $\pm$ 8.0 & 0.390 & 0.087 & 0.091 & 7.5 $\pm$ 3.0 \\
+ & Two-stage (sum)    & 0.00            & $-$0.37 $\pm$ 1.21 & 182.4 $\pm$ 15.9 & 55.7 $\pm$ 7.7 & 0.377 & 0.038 & 0.054 & 12.8 $\pm$ 3.3 \\
+ & Two-stage ($F_3$)  & 0.00            & 0.08 $\pm$ 1.13   & 181.6 $\pm$ 15.7 & 56.0 $\pm$ 7.7 & 0.390 & 0.037 & 0.060 & 13.0 $\pm$ 3.2 \\
+\midrule
+\multirow{10}{*}{18}
+ & S-NSGA-II + UCB1   & 1.91 $\pm$ 0.70 & 0.31 $\pm$ 1.31   & 183.3 $\pm$ 15.8 & 56.1 $\pm$ 8.0 & 0.388 & 0.034 & 0.056 & 7.1 $\pm$ 2.4 \\
+ & S-NSGA-III fixed   & 1.80 $\pm$ 0.71 & 0.37 $\pm$ 1.27   & 183.2 $\pm$ 15.5 & 55.7 $\pm$ 7.5 & 0.390 & 0.035 & 0.057 & 7.2 $\pm$ 2.4 \\
+ & D-UCB1 myopic      & 1.91 $\pm$ 0.71 & 0.27 $\pm$ 1.30   & 183.4 $\pm$ 15.8 & 56.0 $\pm$ 8.0 & 0.389 & 0.034 & 0.054 & 7.1 $\pm$ 2.5 \\
+ & D-LinUCB myopic    & 1.90 $\pm$ 0.75 & 0.41 $\pm$ 1.34   & 183.2 $\pm$ 15.8 & 55.8 $\pm$ 7.7 & 0.389 & 0.034 & 0.055 & 7.2 $\pm$ 2.4 \\
+ & D-UCB1 batched     & 8.10 $\pm$ 0.94 & 12.77 $\pm$ 7.73  & 160.4 $\pm$ 19.0 & 49.1 $\pm$ 7.7 & 0.389 & 0.033 & 0.053 & 8.1 $\pm$ 2.6 \\
+ & D-LinUCB batched   & 8.25 $\pm$ 0.88 & 12.08 $\pm$ 6.92  & 161.7 $\pm$ 18.9 & 49.8 $\pm$ 8.1 & 0.388 & 0.033 & 0.049 & 8.0 $\pm$ 2.5 \\
+ & Myopic ILP         & 0.00            & 0.00              & 183.9 $\pm$ 15.8 & 55.6 $\pm$ 8.0 & 0.400 & 0.045 & 0.080 & 7.9 $\pm$ 2.7 \\
+ & Dickerson lex.     & 2.41 $\pm$ 1.66 & 0.66 $\pm$ 1.70   & 182.7 $\pm$ 15.6 & 67.0 $\pm$ 8.2 & 0.399 & 0.088 & 0.079 & 3.1 $\pm$ 2.0 \\
+ & Two-stage (sum)    & 0.00            & $-$0.28 $\pm$ 1.23 & 184.4 $\pm$ 15.8 & 57.1 $\pm$ 7.8 & 0.386 & 0.033 & 0.048 & 6.8 $\pm$ 2.6 \\
+ & Two-stage ($F_3$)  & 0.00            & 0.00 $\pm$ 1.30   & 183.9 $\pm$ 15.6 & 57.0 $\pm$ 7.6 & 0.399 & 0.032 & 0.050 & 7.1 $\pm$ 2.5 \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+%% ------------------------------------------------------------
+\subsection{RQ1: Evolution of the Price of Fairness}
+\label{sec:results:rq1}
+
+Fig.~\ref{fig:pof} shows $\pof$ round by round. With myopic clearing,
+the framework's mean $\pof$ was 1.60\%, 1.81\% and 1.91\% for
+$\tau = 6$, 12 and 18. The first round, which clears the initial
+backlog of 75 vertices, cost 8.44\%; after that the mean fell to
+1.28--1.61\%. Over all rounds the per-run slope was negative
+($p < 0.001$), but only because of the first round: over rounds 2--25
+it did not differ from zero ($p = 0.42$--0.54). Once the backlog is
+cleared, $\pof$ is stable over time.
+
+What drives $\pof$ is the size of each round, not the passage of
+time. Under the 90\% floor, $\pof$ can be positive only when the ILP
+optimum reaches 10 transplants, which happened in 21--24\% of rounds.
+In those rounds the framework gave up 7.7--7.8\% of transplants; in
+all others it implemented a maximum matching.
+
+The per-round price is also not a real loss over time. Summed over
+the 25 rounds, the framework gave up 7.0, 7.7 and 8.0 transplants per
+run against each round's optimum, yet it finished only $-0.06$, 0.31
+and 0.50 transplants behind the myopic ILP. In other words,
+94--100\% of the shortfall against each round's optimum was recovered
+in later rounds, and $\Delta$ against the myopic ILP was not
+significant at any $\tau$: patients who are not matched in one round
+usually remain in the pool for the next.
+
+\begin{figure*}[!htbp]
+\centering
+\includegraphics[width=\textwidth]{fig1_pof_per_round.png}
+\caption{$\pof$ per cleared round (mean and 95\% CI over 100 runs) for
+the framework (UCB1, LinUCB), the static NSGA-II baseline and the
+lexicographic rule. After the first round, $\pof$ shows no trend.}
+\label{fig:pof}
+\end{figure*}
+
+%% ------------------------------------------------------------
+\subsection{RQ2: Myopic versus Batched Clearing}
+\label{sec:results:rq2}
+
+Batched clearing with $n^* = 90$ was worse at every $\tau$
+(Fig.~\ref{fig:clearing}). At $\tau = 6$ the pool never reached 90
+patients, so no one was transplanted and 65.6 highly sensitized
+patients per run withdrew, against 25.5 under myopic clearing. At
+$\tau = 12$ it transplanted 24\% fewer patients (138.0 vs.\ 181.4,
+$d_z = 1.72$) and 24\% fewer highly sensitized patients, and 33\% more
+of them withdrew. At $\tau = 18$ both losses were 12\% (all
+$p_{\mathrm{bonf}} < 0.001$). Each batch was large, so $\pof$ sat near
+the floor in every cleared round (8.1--8.4\%), while $F_3$ and $F_4$
+were similar to myopic clearing. Waiting did not buy fairness; it only
+cost transplants.
+
+Better-tuned batching narrowed the gap without closing it
+(Table~\ref{tab:batch}). Forcing a clearing at least every three
+rounds avoided the failure at $\tau = 6$ and cut the loss to about
+4.5\% at $\tau = 12$ and 18. Lowering the threshold to $n^* = 60$
+reduced it to 5.5\% and 1.5\%. No variant transplanted more patients
+than myopic clearing. This agrees with the near-optimality of greedy
+matching without departure information~\cite{anderson2017efficient,
+akbarpour2020thickness}, and, in this model, extends to the fairness
+objectives.
+
+\begin{figure*}[!htbp]
+\centering
+\includegraphics[width=\textwidth]{fig2_myopic_vs_batched.png}
+\caption{Myopic (solid) versus batched (dashed) clearing:
+$\pof$ per cleared round (top) and cumulative transplants (bottom),
+mean over 100 runs. The UCB1 and LinUCB batched curves overlap. At
+$\tau = 6$ batched clearing never clears.}
+\label{fig:clearing}
+\end{figure*}
+
+\begin{table}[!t]
+\centering
+\caption{Batching variants (D-UCB1, 30 paired runs). Change in
+transplants against myopic clearing on the same runs.}
+\label{tab:batch}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Variant & $\tau$ & Transplants & High-cPRA tx & PoF (\%) \\
+\midrule
+Myopic                  & 12 & 178.6           & 54.9 & 1.67 \\
+$n^* = 90$              & 12 & 126.1 ($-$29\%) & 38.9 & 8.55 \\
+$n^* = 90$, max.\ 3     & 12 & 170.8 ($-$4.4\%) & 52.7 & 6.80 \\
+$n^* = 60$              & 12 & 168.8 ($-$5.5\%) & 52.4 & 6.60 \\
+\midrule
+Myopic                  & 18 & 180.6           & 56.5 & 1.83 \\
+$n^* = 90$              & 18 & 153.6 ($-$15\%) & 48.8 & 8.34 \\
+$n^* = 90$, max.\ 3     & 18 & 172.4 ($-$4.5\%) & 54.3 & 6.85 \\
+$n^* = 60$              & 18 & 177.9 ($-$1.5\%) & 56.2 & 4.32 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%% ------------------------------------------------------------
+\subsection{RQ3: Comparison with the Baselines}
+\label{sec:results:rq3}
+
+\emph{Myopic ILP.} The framework transplanted the same number of
+patients at every $\tau$ ($p_{\mathrm{bonf}} = 1.00$) and was fairer
+on all three fairness objectives ($p_{\mathrm{bonf}} < 0.001$;
+Fig.~\ref{fig:f3}). It reduced $F_3$ by 21--24\%
+($|d_z| = 1.4$--1.7), $F_4$ by 28--34\% ($|d_z| = 1.3$--1.8) and
+$F_2$ by 3--4\% ($|d_z| = 1.9$--2.7), and 3--10\% fewer highly
+sensitized patients withdrew ($p_{\mathrm{bonf}} \leq 0.032$). Part of
+this gain costs nothing: with a 100\% floor ($\pof = 0$ in every
+round) the framework still matched the ILP's volume (179.2 vs.\
+178.4) and reduced $F_3$ by 18\% ($p_{\mathrm{bonf}} < 0.001$). The
+volume ILP leaves fairness unused among the maximum matchings; the
+two-stage ILP below uses it exactly.
+
+\emph{Two-stage ILP.} The exact two-stage ILP was more effective than
+the framework at maximum volume, at all three levels of comparison
+(Table~\ref{tab:levels}, Fig.~\ref{fig:levels}).
+\begin{itemize}
+  \item \emph{Identical pools.} The two-stage ILP (sum) reached
+    $F_3 = 0.0217$ and $F_4 = 0.0348$, against 0.0548 and 0.1143 for
+    the framework's maximum-volume choice (both
+    $p_{\mathrm{bonf}} \leq 0.006$). The framework's front held only
+    1.1 solutions at maximum volume per pool on average, and its
+    lowest $F_3$ at maximum volume equalled the optimum of the
+    two-stage ILP ($F_3$) in half of the pools.
+  \item \emph{Fixed trajectories.} On the same pools in every round
+    ($\tau = 12$, 689 rounds), the gap was smaller. On the stage-2
+    score~\eqref{eq:twostage}, the volume ILP scored 3.000, the
+    two-stage ILP 2.322 and the framework's maximum-volume choice
+    2.606. The framework's lowest $F_3$ at maximum volume equalled the
+    optimum of the two-stage ILP ($F_3$) in 95.4\% of rounds (100\% of
+    enumerated rounds), so
+    most of the remaining gap comes from the selection rule, which
+    differs from the stage-2 objective, rather than from the search.
+  \item \emph{Full trajectories.} Against the framework with its 90\%
+    floor, the two-stage ILP made 1.3, 1.0 and 1.0 more transplants
+    per run ($\tau = 6$, 12, 18; all $p_{\mathrm{bonf}} < 0.001$) and
+    1.1--1.7 more highly sensitized transplants
+    ($p_{\mathrm{bonf}} < 0.001$). Its $F_4$ was lower at every $\tau$
+    ($p_{\mathrm{bonf}} < 0.001$), its $F_2$ was lower at $\tau = 12$
+    and 18 ($p_{\mathrm{bonf}} \leq 0.040$), and its $F_3$ was lower at
+    $\tau = 6$ ($p_{\mathrm{bonf}} = 0.034$) and did not differ at
+    $\tau = 12$ and 18. With a 100\% floor, the framework matched the
+    two-stage ILP's volume but had higher $F_2$, $F_3$ and $F_4$
+    ($\tau = 12$, 30 runs, $p_{\mathrm{bonf}} \leq 0.004$).
+\end{itemize}
+The two-stage ILP is therefore the stronger method when the aim is
+the fairest matching at maximum volume. The 90\% floor gives up up to
+10\% of a round's transplants, but over full trajectories this did not
+make the framework fairer than the two-stage ILP. Against the myopic
+ILP, the two-stage ILP was much fairer and made as many or more
+transplants (more at $\tau = 6$, $p_{\mathrm{bonf}} < 0.001$).
+
+\emph{Tie-breaking.} The deterministic HLA tie-break rarely affects the
+reported outcomes. In 956 enumerated rounds with an exact front,
+24\% had more than one maximum matching with the optimal stage-2
+score, but the tied matchings differed in $F_2$, $F_3$ or $F_4$ in only
+0.1\% of rounds (mean range of $F_3$ among them: $5 \times 10^{-5}$).
+
+\emph{Lexicographic rule}~\cite{dickerson2014price}. Volume and
+$\pof$ did not differ from the framework. The lexicographic rule
+transplanted about 20\% more highly sensitized patients and lost far
+fewer of them to withdrawal (3.1--17.5 vs.\ 7.1--25.5 per run), but it
+over-corrected: their match rate rose well above everyone else's, so
+its $F_3$ was the largest of all myopic methods (0.087--0.095), and
+$F_2$ and $F_4$ did not improve on the ILP. The two methods pursue
+different goals, maximum priority versus balanced access, and the
+choice between them is a policy decision.
+
+\emph{Static baselines.} Static NSGA-II with UCB1 and static NSGA-III
+with a fixed rate gave the same volume, $\pof$ and fairness as the
+dynamic framework. Warm-starting added only 0.55\% hypervolume at
+$\tau = 18$ ($p_{\mathrm{bonf}} = 0.007$). With ILP guidance and exact
+small rounds, little is left for the warm start to improve.
+
+\begin{table}[!t]
+\centering
+\caption{Framework and ILP baselines at three levels of comparison
+(mean $\pm$ sd). A: same pool, one round (30 pools). B: same pool in
+every round of the framework's trajectories ($\tau = 12$, per-run
+means). C: each method clears its own pools ($\tau = 12$, per-run
+means; framework 90\% floor and ILPs over 100 runs, 100\% floor over
+30). Volume ILP, two-stage ILP and the 100\% pick or floor are
+restricted to maximum volume; the 90\% pick or floor may give up to
+10\% of a round's transplants. Score: stage-2
+objective~\eqref{eq:twostage} without the tie-break.}
+\label{tab:levels}
+\footnotesize
+\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Method & $F_2$ & $F_3$ & $F_4$ & Score \\
+\midrule
+\multicolumn{5}{@{}l}{\textit{A. Identical pools}} \\
+Volume ILP          & 0.350 & 0.056 & 0.126 & 2.875 \\
+Two-stage ILP (sum) & 0.324 & 0.022 & 0.035 & 1.826 \\
+Two-stage ILP ($F_3$) & 0.347 & 0.022 & 0.047 & 1.977 \\
+Framework, 100\% pick & 0.348 & 0.055 & 0.114 & 2.783 \\
+Framework, 90\% pick  & 0.330 & 0.023 & 0.055 & 2.212 \\
+\multicolumn{5}{@{}l}{\textit{B. Fixed trajectories}} \\
+Volume ILP          & 0.382 & 0.049 & 0.090 & 2.753 \\
+Two-stage ILP (sum) & 0.378 & 0.036 & 0.054 & 2.356 \\
+Two-stage ILP ($F_3$) & 0.382 & 0.035 & 0.058 & 2.414 \\
+Framework, 100\% pick & 0.379 & 0.041 & 0.069 & 2.681 \\
+Framework, 90\% pick  & 0.378 & 0.037 & 0.061 & 2.578 \\
+\multicolumn{5}{@{}l}{\textit{C. Full trajectories}} \\
+Myopic ILP          & 0.390 & 0.051 & 0.092 & -- \\
+Two-stage ILP (sum) & 0.377 & 0.038 & 0.054 & -- \\
+Two-stage ILP ($F_3$) & 0.390 & 0.037 & 0.060 & -- \\
+Framework, 100\% floor & 0.381 & 0.041 & 0.069 & -- \\
+Framework, 90\% floor  & 0.379 & 0.039 & 0.061 & -- \\
+\bottomrule
+\multicolumn{5}{@{}l}{Score in B: mean of per-run means over all rounds.}
+\end{tabular}
+\end{table}
+
+\begin{figure*}[!htbp]
+\centering
+\includegraphics[width=\textwidth]{fig3_three_levels.png}
+\caption{$F_2$, $F_3$ and $F_4$ of the framework and the ILP baselines
+at the three levels of comparison (mean and 95\% CI).}
+\label{fig:levels}
+\end{figure*}
+
+\begin{figure*}[!htbp]
+\centering
+\includegraphics[width=\textwidth]{fig6_forest_tau12.png}
+\caption{Paired differences, framework (UCB1, 90\% floor) minus each
+baseline, over 100 runs at $\tau = 12$ (mean and 95\% CI). Negative
+values favor the framework. Filled markers: significant after
+Bonferroni correction.}
+\label{fig:forest}
+\end{figure*}
+
+\begin{figure*}[!htbp]
+\centering
+\includegraphics[width=\textwidth]{trajectory_F3.png}
+\caption{High-cPRA access gap $F_3$ per cleared round (mean and 95\%
+CI over 100 runs). The framework stays below the myopic ILP; the
+lexicographic rule over-corrects. Batched bands are wider because few
+runs clear in some rounds.}
+\label{fig:f3}
+\end{figure*}
+
+%% ------------------------------------------------------------
+\subsection{RQ4: Trade-off Solutions below Maximum Volume}
+\label{sec:results:rq4}
+
+A single two-stage ILP solution fixes the volume at its maximum. The
+front, in contrast, contains matchings at several volumes. We asked
+whether these give meaningful options and how close they are to the
+exact answer at the same volume (Table~\ref{tab:tradeoff},
+Fig.~\ref{fig:tradeoff}).
+
+\emph{Identical pools.} The number of front solutions grew from 3.4 at
+the 95\% level to 23.0 at 80\%. In 23\%, 53\%, 80\% and 90\% of pools
+(95\% to 80\% levels), the front held a solution with a lower stage-2
+score than the two-stage ILP at maximum volume, and in 3\%, 13\%, 33\%
+and 60\% of pools a solution with lower or equal $F_2$, $F_3$ and
+$F_4$ at once. The exact two-stage ILP at the same volumes was still
+fairer at every level (score 1.291 against 1.318 at 80\%; 1.414
+against 1.790 at 90\%), although 97--100\% of these solves stopped at
+the 120~s limit. Each exact solve gives one matching at one volume;
+the front gave all of them in one run of 27.6~s.
+
+\emph{Fixed trajectories.} On the pools of real trajectory rounds the
+front was close to the exact reference at every level. At $\tau = 12$
+the fairest front solution scored 2.416 and 2.167 at the 90\% and
+80\% levels, against 2.379 and 2.146 for the exact reference, and its
+$F_3$ was the same (0.035 at 90\%; 0.023 against 0.024 at 80\%).
+Where the level allowed fewer transplants than $F_1^{*}$ (70\% of
+rounds at the 80\% level), the front offered 7.5 options on average,
+and in 64\% of these rounds at least one was fairer than the two-stage
+ILP at maximum volume. At the 80\% level, the fairest front solution
+had significantly lower $F_2$, $F_3$ and $F_4$ than the two-stage ILP
+at maximum volume at every $\tau$ ($p_{\mathrm{bonf}} < 0.001$). The
+floor rule, however, did not pick these solutions: its choice scored
+2.540 at 80\% and 2.830 at maximum volume, against 2.167 and 2.548 for
+the fairest solution on the same front. The front holds near-exact
+trade-off solutions; the selection rule loses most of the fairness.
+
+\emph{Selection rules over full trajectories.} The rules move the
+framework along a consistent trade-off at all three $\tau$
+(Table~\ref{tab:select}, Fig.~\ref{fig:select}). The 100\% floor matched
+the two-stage ILP's volume but was less fair. The 80\% floor gave a
+lower $F_3$ than the two-stage ILP at every $\tau$ (0.045, 0.028 and
+0.025 against 0.054, 0.035 and 0.032; $p_{\mathrm{bonf}} < 0.001$) and
+a lower $F_2$ and $F_4$ at $\tau = 6$ and 12, for 2.1--2.9\% fewer
+transplants ($\Delta = 1.7$--2.1\%). The compromise rule reduced $F_3$
+to 0.013--0.026 at a much larger cost ($\pof = 36$--37\%,
+$\Delta = 5.7$--6.5\%). Both rules also transplanted fewer highly
+sensitized patients than the two-stage ILP (2.2--2.6 fewer with the
+80\% floor), because $F_3$ can fall when fewer patients are matched
+overall. These options are not available from a single two-stage ILP
+solution; whether a given trade-off is acceptable is a policy choice.
+
+\begin{table*}[!t]
+\centering
+\caption{Fairness available below maximum volume. Level $\rho$ allows
+$V = \lceil \rho F_1^{*} \rceil$ or more transplants. Options: distinct
+front solutions with $F_1 \geq V$. Score: stage-2
+objective~\eqref{eq:twostage} (lower = fairer). Exact: best stage-2
+solution among the volumes solved from $V$ to $F_1^{*}$ (one solve per
+level, time-limited). Means over all units.}
+\label{tab:tradeoff}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}lccccccc@{}}
+\toprule
+Level $\rho$ & Options & Front best & Rule pick & Exact & Front best $F_3$ & Exact $F_3$ & Time-limit share \\
+\midrule
+\multicolumn{8}{@{}l}{\textit{Identical pools (30 pools)}} \\
+100\% & 1.1 & 2.762 & 2.783 & 1.826 & 0.055 & 0.022 & 0.77 \\
+95\% & 3.4 & 2.216 & 2.509 & 1.519 & 0.034 & 0.010 & 0.97 \\
+90\% & 8.5 & 1.790 & 2.212 & 1.414 & 0.015 & 0.006 & 0.97 \\
+85\% & 15.7 & 1.459 & 1.812 & 1.347 & 0.008 & 0.005 & 1.00 \\
+80\% & 23.0 & 1.318 & 1.695 & 1.291 & 0.003 & 0.004 & 1.00 \\
+\multicolumn{8}{@{}l}{\textit{Fixed trajectories, $\tau = 12$ (750 rounds)}} \\
+100\% & 2.0 & 2.548 & 2.830 & 2.476 & 0.041 & 0.039 & 0.05 \\
+95\% & 2.2 & 2.523 & 2.819 & 2.460 & 0.040 & 0.038 & 0.05 \\
+90\% & 3.0 & 2.416 & 2.717 & 2.379 & 0.035 & 0.035 & 0.08 \\
+85\% & 4.2 & 2.307 & 2.634 & 2.281 & 0.030 & 0.030 & 0.09 \\
+80\% & 5.9 & 2.167 & 2.540 & 2.146 & 0.023 & 0.024 & 0.12 \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\begin{figure*}[!htbp]
+\centering
+\includegraphics[width=\textwidth]{fig4_tradeoff_levels.png}
+\caption{Fairness against the volume level $\rho$: fairest front
+solution with $F_1 \geq V$, the floor-rule choice, the exact two-stage
+ILP (best of the volumes solved from $V$ to $F_1^{*}$) and the
+two-stage ILP at maximum volume (dotted). Mean and 95\% CI.}
+\label{fig:tradeoff}
+\end{figure*}
+
+\begin{table*}[!t]
+\centering
+\caption{Selection rules over full trajectories compared with the
+two-stage ILP and the myopic ILP (mean $\pm$ sd over the same 30 paired
+runs).}
+\label{tab:select}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}lccccccc@{}}
+\toprule
+Configuration & Tx & High-cPRA tx & $F_2$ & $F_3$ & $F_4$ & PoF (\%) & $\Delta$ (\%) \\
+\midrule
+\multicolumn{8}{@{}l}{\textit{$\tau = 6$}} \\
+Framework, 100\% floor & 171.7 & 50.6 & 0.359 & 0.065 & 0.106 & 0.00 & $-$1.02 \\
+Framework, 90\% floor  & 170.2 & 49.9 & 0.355 & 0.060 & 0.101 & 1.46 & $-$0.13 \\
+Framework, 80\% floor  & 166.9 & 49.3 & 0.345 & 0.045 & 0.077 & 9.86 & 1.81 \\
+Framework, compromise  & 158.9 & 46.6 & 0.320 & 0.026 & 0.047 & 36.04 & 6.55 \\
+Two-stage ILP (sum)    & 171.9 & 51.5 & 0.355 & 0.054 & 0.091 & 0.00 & $-$1.12 \\
+Myopic ILP             & 170.0 & 48.9 & 0.370 & 0.075 & 0.140 & 0.00 & 0.00 \\
+\multicolumn{8}{@{}l}{\textit{$\tau = 12$}} \\
+Framework, 100\% floor & 179.2 & 54.9 & 0.381 & 0.041 & 0.069 & 0.00 & $-$0.49 \\
+Framework, 90\% floor  & 178.6 & 54.9 & 0.378 & 0.037 & 0.061 & 1.68 & $-$0.10 \\
+Framework, 80\% floor  & 175.3 & 53.3 & 0.371 & 0.028 & 0.048 & 10.34 & 1.74 \\
+Framework, compromise  & 168.3 & 51.1 & 0.357 & 0.015 & 0.028 & 37.09 & 5.70 \\
+Two-stage ILP (sum)    & 179.1 & 55.7 & 0.375 & 0.035 & 0.056 & 0.00 & $-$0.43 \\
+Myopic ILP             & 178.4 & 53.9 & 0.389 & 0.050 & 0.093 & 0.00 & 0.00 \\
+\multicolumn{8}{@{}l}{\textit{$\tau = 18$}} \\
+Framework, 100\% floor & 181.8 & 56.7 & 0.392 & 0.037 & 0.063 & 0.00 & $-$0.72 \\
+Framework, 90\% floor  & 180.6 & 56.5 & 0.388 & 0.034 & 0.058 & 1.83 & $-$0.05 \\
+Framework, 80\% floor  & 176.8 & 54.9 & 0.382 & 0.025 & 0.043 & 10.62 & 2.06 \\
+Framework, compromise  & 169.9 & 52.3 & 0.370 & 0.013 & 0.025 & 37.43 & 5.92 \\
+Two-stage ILP (sum)    & 181.5 & 57.5 & 0.385 & 0.032 & 0.048 & 0.00 & $-$0.53 \\
+Myopic ILP             & 180.5 & 55.5 & 0.400 & 0.045 & 0.081 & 0.00 & 0.00 \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\begin{figure*}[!htbp]
+\centering
+\includegraphics[width=\textwidth]{fig5_selection_rules.png}
+\caption{Selection rules over full trajectories: trajectory loss
+$\Delta$ against $F_3$ (top) and $F_4$ (bottom), mean and 95\% CI over
+the same 30 paired runs. The framework's rules (blue, joined) run from
+the 100\% floor to the compromise rule.}
+\label{fig:select}
+\end{figure*}
+
+%% ------------------------------------------------------------
+\subsection{RQ5: Operator Selection and ILP Guidance}
+\label{sec:results:rq5}
+
+UCB1 and LinUCB were statistically identical on every outcome
+($p_{\mathrm{bonf}} = 1.00$). UCB1 spread its choices almost evenly
+over the four mutation rates (normalized entropy 1.00), whereas LinUCB
+leaned slightly towards $p_m = 0.25$ under myopic clearing (28--29\%)
+and towards $p_m = 0.01$ under batched clearing (33--38\%)
+(Fig.~\ref{fig:arms}).
+Table~\ref{tab:hybrid} isolates the parts of the ILP guidance. NSGA-III
+alone never reached the volume optimum, and its selected solutions had
+a mean $\pof$ of 28.3\%, against 8.2\% for the full hybrid
+($p_{\mathrm{bonf}} < 0.001$); roughly 20 percentage points of the
+unguided $\pof$ were search failure rather than fairness. The ILP
+solution as a seed alone changed nothing ($p_{\mathrm{bonf}} = 1.00$
+for every metric), because the greedy repair rebuilt it into a smaller
+matching. Repair priority was the decisive part, raising optimum
+attainment to 77\% of pools, and the archive closed the remaining gap
+to 100\% with a slightly higher hypervolume ($p_{\mathrm{bonf}} =
+0.007$). The guidance cost 5.4~s per round over NSGA-III alone in
+these pools, 2.4~s of it for the ILP. In the main experiment the ILP
+took 0.48~s per round, 2.1\% of a framework clearing (23.3~s), and
+the HiGHS fallback was never needed.
+
+\begin{table}[!t]
+\centering
+\caption{Ablation of the ILP guidance: one round on 30 pools of 75
+vertices (UCB1, $N = 100$, $G_{\max} = 150$). ILP optimum: 42.3
+transplants. PoF of the solution chosen by the 90\% floor rule,
+relative to the ILP optimum.}
+\label{tab:hybrid}
+\footnotesize
+\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+Arm & At optimum & Max $F_1$ & HV & PoF (\%) & Time (s) \\
+\midrule
+NSGA-III alone   & 0 / 30  & 32.6 & 0.566 & 28.3 & 18.2 \\
+ILP seed only    & 0 / 30  & 32.7 & 0.566 & 28.8 & 20.9 \\
+Seed + priority  & 23 / 30 & 41.8 & 0.696 & 9.2  & 25.1 \\
+Full hybrid      & 30 / 30 & 42.3 & 0.703 & 8.2  & 23.6 \\
+\bottomrule
+\multicolumn{6}{@{}l}{Time: MOEA plus ILP (2.4~s) where the ILP is used.}
+\end{tabular}
+\end{table}
+The ablation in Table~\ref{tab:ablation} explains why the choice of
+bandit mattered so little. Without ILP guidance, no setting reached
+the optimum in any of the 30 pools (32.7 vs.\ 42.3 transplants); with
+guidance, every setting reached it in every pool. With guidance, UCB1
+beat fixed rates of 0.10 and 0.25 but was slightly below a fixed rate
+of 0.01, and the two bandits did not differ ($p_{\mathrm{bonf}} =
+0.11$). All differences in hypervolume were below 3\%. The bandits
+protect against a poorly chosen rate without tuning, but here they do
+not beat the best fixed rate, and the pool context gives LinUCB no
+advantage. The ILP guidance, not the operator selection, is what
+drives search quality.
+
+\begin{figure*}[!htbp]
+\centering
+\includegraphics[width=\textwidth]{aos_arm_selection.png}
+\caption{Share of generations using each mutation rate per round
+($\tau = 12$).}
+\label{fig:arms}
+\end{figure*}
+
+\begin{table}[!t]
+\centering
+\caption{AOS ablation: one round on 30 pools of 75 vertices.
+ILP optimum: 42.3 transplants.}
+\label{tab:ablation}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+& \multicolumn{2}{c}{Without guidance} & \multicolumn{2}{c}{With guidance} \\
+\cmidrule(lr){2-3}\cmidrule(l){4-5}
+Setting & HV & Max $F_1$ & HV & Max $F_1$ \\
+\midrule
+UCB1          & 0.568 & 32.7 & 0.703 & 42.3 \\
+LinUCB        & 0.567 & 32.6 & 0.704 & 42.3 \\
+Fixed $0.01$  & 0.570 & 32.7 & 0.708 & 42.3 \\
+Fixed $0.10$  & 0.564 & 32.7 & 0.698 & 42.3 \\
+Fixed $0.25$  & 0.558 & 32.6 & 0.688 & 42.3 \\
+\midrule
+Pools at optimum & \multicolumn{2}{c}{0 / 30} & \multicolumn{2}{c}{30 / 30} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%% ------------------------------------------------------------
+\subsection{RQ6: Sensitivity and Scalability}
+\label{sec:results:rq6}
+
+Table~\ref{tab:sens} summarizes the sensitivity analyses at
+$\tau = 12$; the selection rules are discussed in
+Section~\ref{sec:results:rq4}.
+
+\emph{CIT, exit rate and arrival rate.} A 12~h CIT limit removed
+13--14\% of transplants for every method, but the framework still
+matched the ILP and reduced $F_3$. Changing $\mu_d$ left $\pof$
+unchanged, although a higher exit rate hurt batched clearing far more
+($-26\%$) than myopic clearing ($-1.6\%$). At $\lambda = 7$ and 13 the
+framework again matched the ILP and reduced $F_3$ by 22\% and 27\%;
+$\pof$ rose with pool thickness (1.03\%, 1.67\%, 3.04\%), in line with
+RQ1.
+
+\emph{Scalability.} With initial pools of 200 vertices, the framework
+took 37~s per round, against 5~s for the ILP and 8~s for the
+lexicographic rule. It kept the ILP's volume per round (27.6 vs.\
+27.7) and reduced $F_3$ by 39\%; its mean $\pof$ rose to 7.0\%
+because most rounds now exceeded 10 transplants. With 500 initial
+vertices the ILP took 38~s per round, and the lexicographic rule's
+over-correction grew ($F_3 = 0.46$ against 0.05 for the ILP). The
+framework was not run at 500 vertices because of memory limits.
+
+\begin{table}[!t]
+\centering
+\caption{Sensitivity at $\tau = 12$ (30 paired runs): D-UCB1 myopic
+against the myopic ILP.}
+\label{tab:sens}
+\footnotesize
+\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+Variant & PoF (\%) & Tx (fw) & Tx (ILP) & $F_3$ (fw) & $F_3$ (ILP) \\
+\midrule
+Base                 & 1.67  & 178.6 & 178.4 & 0.037 & 0.050 \\
+Floor 100\%          & 0.00  & 179.2 & 178.4 & 0.041 & 0.050 \\
+Floor 80\%           & 10.34 & 175.3 & 178.4 & 0.029 & 0.050 \\
+Compromise           & 37.09 & 168.3 & 178.4 & 0.015 & 0.050 \\
+$\cit_{\max} = 16$~h & 1.78  & 178.0 & 177.8 & 0.036 & 0.049 \\
+$\cit_{\max} = 12$~h & 1.51  & 154.6 & 153.9 & 0.033 & 0.040 \\
+$\mu_d = 0.01$       & 1.75  & 179.4 & 179.1 & 0.036 & 0.048 \\
+$\mu_d = 0.04$       & 1.69  & 175.7 & 176.0 & 0.040 & 0.054 \\
+$\lambda = 7$        & 1.03  & 137.5 & 137.1 & 0.038 & 0.049 \\
+$\lambda = 13$       & 3.04  & 224.7 & 225.2 & 0.036 & 0.049 \\
+\bottomrule
+\multicolumn{6}{@{}l}{fw: framework; Tx: transplants.}
+\end{tabular}
+\end{table}
+
+%% ------------------------------------------------------------
+\subsection{Computational Cost}
+\label{sec:results:cost}
+
+Table~\ref{tab:cost} reports the cost of every method under the same
+conditions. On trajectory rounds the two-stage ILP (sum) needed
+5.08~s per round at $\tau = 12$, against 19.30~s for the framework,
+0.52~s for the volume ILP and 1.14~s for the lexicographic rule, and
+its stage~2 reached the 60~s limit in 4.0\% of rounds. On the larger
+75-vertex pools of the identical-pool comparison, stage~2 took
+233.3~s on average and reached its 300~s limit in 67\% of pools,
+against 27.2~s for the framework. Exact solves at lower volume levels
+are more expensive still: one solve per level took 14--63~s on
+trajectory rounds and about 125~s on identical pools, where almost all
+reached the limit. The exact method is thus fast on the small pools
+that arise once the backlog is cleared, but its cost grows quickly
+with pool size and with the number of volume levels requested, while
+the framework returns a whole front at a roughly constant cost.
+
+\begin{table*}[!t]
+\centering
+\caption{Computational cost. Identical pool: one round on a 75-vertex
+pool (stage-2 limit 300~s). Trajectory: mean seconds per cleared round
+($\tau = 12$; stage-2 limit 60~s). One core per run.}
+\label{tab:cost}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Method & Identical pool (s) & Time-limit share & Trajectory (s/round) & PrefLib (s/round) \\
+\midrule
+Volume (myopic) ILP & 3.2 & -- & 0.52 & 0.16 \\
+Two-stage ILP (sum) & 233.3 & 0.67 & 5.08 & 2.45 \\
+Two-stage ILP ($F_3$) & 58.5 & 0.17 & 1.60 & 0.76 \\
+Framework (NSGA-III + AOS, incl.\ ILP) & 27.2 & -- & 19.30 & 4.41 \\
+Dickerson lex. & -- & -- & 1.14 & 0.38 \\
+Exact stage 2 at all lower levels & -- & 0.05--0.12\textsuperscript{a} & 24.96 & -- \\
+\bottomrule
+\multicolumn{5}{@{}l}{\textsuperscript{a}\,Range over the four lower levels at $\tau = 12$ (Table~\ref{tab:tradeoff}).}
+\end{tabular}
+\end{table*}
+
+%% ------------------------------------------------------------
+\subsection{Out-of-Distribution Validation on PrefLib}
+\label{sec:results:ood}
+
+Table~\ref{tab:ood} reports 120 paired runs. With myopic clearing the
+framework transplanted 75.03 patients against 75.38 for the ILP, a
+difference that was not significant ($p_{\mathrm{bonf}} = 0.19$), at a
+mean $\pof$ of 0.73\%. Its $F_3$ was 4\% lower than the ILP's, but not
+significantly; its $F_2$ was significantly lower
+(Fig.~\ref{fig:forestood}). The two-stage ILP (sum) was again the
+stronger method at maximum volume: it made more transplants (75.79),
+had a lower $\Delta$ ($-0.50\%$ against 0.50\%) and had lower $F_2$
+and $F_3$ than the framework (all significant after Bonferroni
+correction). The lexicographic rule again transplanted the most highly
+sensitized patients and had the largest gap among the myopic methods.
+Batched clearing with a three-round maximum interval transplanted
+3.9\% fewer patients than myopic clearing and doubled $F_3$ (both
+$p_{\mathrm{bonf}} < 0.001$). On all 179 instances, the lexicographic
+rule cost 0.84\% of transplants on average, rising to 2.2\% at 294
+vertices.
+
+The findings on volume and clearing policy carry over to PrefLib, but
+the framework's fairness gain is much smaller. PrefLib graphs are
+dense, so most patients are matched in the first round and few rounds
+offer a choice between maximum matchings. Centers are assigned at
+random, so $F_4$ is not reported.
+
+\begin{table}[!t]
+\centering
+\caption{PrefLib 00036: 12 instances of 128--147 vertices, 10 paired
+runs each, $\tau = 12$ (mean $\pm$ sd).}
+\label{tab:ood}
+\footnotesize
+\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+Configuration & PoF (\%) & Transplants & High-cPRA tx & $F_2$ & $F_3$ \\
+\midrule
+Myopic ILP            & 0.00 & 75.38 $\pm$ 13.46 & 10.72 $\pm$ 2.63 & 0.325 & 0.062 \\
+Dickerson lex.        & 1.54 & 75.09 $\pm$ 13.59 & 13.57 $\pm$ 2.96 & 0.324 & 0.080 \\
+Two-stage (sum)       & 0.00 & 75.79 $\pm$ 13.81 & 11.40 $\pm$ 2.71 & 0.312 & 0.055 \\
+Two-stage ($F_3$)     & 0.00 & 75.36 $\pm$ 13.66 & 11.45 $\pm$ 2.64 & 0.324 & 0.056 \\
+D-UCB1 myopic         & 0.73 & 75.03 $\pm$ 13.68 & 10.59 $\pm$ 2.53 & 0.316 & 0.060 \\
+D-LinUCB myopic       & 0.77 & 74.96 $\pm$ 13.69 & 10.62 $\pm$ 2.63 & 0.315 & 0.059 \\
+D-UCB1 batched\textsuperscript{a} & 2.20 & 72.12 $\pm$ 13.28 & 10.16 $\pm$ 2.54 & 0.325 & 0.118 \\
+\bottomrule
+\multicolumn{6}{@{}l}{\textsuperscript{a}\,three-round maximum interval.}
+\end{tabular}
+\end{table}
+
+\begin{figure*}[!htbp]
+\centering
+\includegraphics[width=\textwidth]{fig7_forest_preflib.png}
+\caption{PrefLib 00036: paired differences, framework (UCB1, 90\%
+floor) minus each baseline, over 120 paired units (mean and 95\% CI).
+Filled markers: significant after Bonferroni correction.}
+\label{fig:forestood}
+\end{figure*}
+
+%% ------------------------------------------------------------
+\subsection{Limitations}
+\label{sec:results:limits}
+
+All results come from synthetic simulation informed by public ANZKX
+information, not from validation on patient-level clinical data. The
+exit rate, withdrawal thresholds, transport and CIT constraints and
+the HLA model are modeling assumptions rather than validated ANZKX
+parameters, so the results describe model behaviour, not clinical
+outcomes. No single arrival rate matches both the ANZKX volume and
+pool size, although the findings held at $\lambda = 7$, 10 and 13.
+$F_4$ is a proxy. $\pof$ is bounded by the 90\% floor, so its level
+partly reflects the selection rule, and the rule, which differs from
+the stage-2 objective, did not choose the fairest solutions available
+on the front. Batched clearing was tested without information about
+upcoming departures. The two-stage ILP and the exact level solves were
+time-limited, so on large pools their solutions are the best found,
+not proven optima. The framework's fairness gain over the volume ILP
+was small on PrefLib, and the framework was not run at 500 vertices.
+The ILP guidance reduces search-failure bias in $\pof$, but the
+remaining loss also depends on the selection rule and on how fully the
+rest of the front is approximated.
