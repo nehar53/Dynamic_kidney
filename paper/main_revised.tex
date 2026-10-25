@@ -1312,9 +1312,9 @@ the framework at maximum volume, at all three levels of comparison
     two-stage ILP ($F_3$) in half of the pools.
   \item \emph{Fixed trajectories.} On the same pools in every round
     ($\tau = 12$, 689 rounds), the gap was smaller. On the stage-2
-    score~\eqref{eq:twostage}, the volume ILP scored 3.000, the
-    two-stage ILP 2.322 and the framework's maximum-volume choice
-    2.606. The framework's lowest $F_3$ at maximum volume equalled the
+    score~\eqref{eq:twostage}, the volume ILP scored 2.753, the
+    two-stage ILP 2.356 and the framework's maximum-volume choice
+    2.681. The framework's lowest $F_3$ at maximum volume equalled the
     optimum of the two-stage ILP ($F_3$) in 95.4\% of rounds (100\% of
     enumerated rounds), so
     most of the remaining gap comes from the selection rule, which
@@ -1502,7 +1502,7 @@ Level $\rho$ & Options & Front best & Rule pick & Exact & Front best $F_3$ & Exa
 90\% & 8.5 & 1.790 & 2.212 & 1.414 & 0.015 & 0.006 & 0.97 \\
 85\% & 15.7 & 1.459 & 1.812 & 1.347 & 0.008 & 0.005 & 1.00 \\
 80\% & 23.0 & 1.318 & 1.695 & 1.291 & 0.003 & 0.004 & 1.00 \\
-\multicolumn{8}{@{}l}{\textit{Fixed trajectories, $\tau = 12$ (750 rounds)}} \\
+\multicolumn{8}{@{}l}{\textit{Fixed trajectories, $\tau = 12$ (30 runs)}} \\
 100\% & 2.0 & 2.548 & 2.830 & 2.476 & 0.041 & 0.039 & 0.05 \\
 95\% & 2.2 & 2.523 & 2.819 & 2.460 & 0.040 & 0.038 & 0.05 \\
 90\% & 3.0 & 2.416 & 2.717 & 2.379 & 0.035 & 0.035 & 0.08 \\
@@ -1747,9 +1747,10 @@ Two-stage ILP (sum) & 233.3 & 0.67 & 5.08 & 2.45 \\
 Two-stage ILP ($F_3$) & 58.5 & 0.17 & 1.60 & 0.76 \\
 Framework (NSGA-III + AOS, incl.\ ILP) & 27.2 & -- & 19.30 & 4.41 \\
 Dickerson lex. & -- & -- & 1.14 & 0.38 \\
-Exact stage 2 at all lower levels & -- & 0.05--0.12\textsuperscript{a} & 24.96 & -- \\
+Exact stage 2 at all lower levels & -- & 0.05--0.12\textsuperscript{a} & 24.96\textsuperscript{b} & -- \\
 \bottomrule
-\multicolumn{5}{@{}l}{\textsuperscript{a}\,Range over the four lower levels at $\tau = 12$ (Table~\ref{tab:tradeoff}).}
+\multicolumn{5}{@{}l}{\textsuperscript{a}\,Range over the four lower levels at $\tau = 12$ (Table~\ref{tab:tradeoff}).}\\
+\multicolumn{5}{@{}l}{\textsuperscript{b}\,All four lower levels per round, mean over $\tau = 6$, 12 and 18.}
 \end{tabular}
 \end{table*}
 
