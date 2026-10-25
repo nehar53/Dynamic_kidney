@@ -657,7 +657,8 @@ def tables(runs, lv, pools, trounds, ood, taus, out, n_runs, results):
         order = ["dyn_nsga3_ucb1_myopic", "dyn_nsga3_linucb_myopic", "dyn_nsga3_ucb1_batched_mi3",
                  "twostage_ilp_sum", "twostage_ilp_f3", "myopic_ilp", "dickerson_lex"]
         names = {"dyn_nsga3_ucb1_myopic": "Framework UCB1", "dyn_nsga3_linucb_myopic": "Framework LinUCB",
-                 "dyn_nsga3_ucb1_batched_mi3": "Framework UCB1 batched (max int. 3)"}
+                 "dyn_nsga3_ucb1_batched_mi3": "Framework UCB1 batched (max int. 3)",
+                 "dickerson_lex": "Lexicographic rule"}
         body = [[names.get(c, m14.NAMES.get(c, c))] + [_fmt(ood[ood["config"] == c][col], d)
                                                         for col, _, d in ocols]
                 for c in order if (ood["config"] == c).any()]
