@@ -1,0 +1,170 @@
+\documentclass[10pt]{article}
+\usepackage[a4paper,margin=2cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{textcomp}
+\usepackage{booktabs,tabularx,enumitem}
+\usepackage[hidelinks]{hyperref}
+\setlist{nosep,leftmargin=1.2em}
+\setlength{\parskip}{3pt}
+\setlength{\parindent}{0pt}
+\renewcommand{\arraystretch}{1.15}
+
+\begin{document}
+
+{\Large\bfseries Fairness in dynamic kidney exchange: a research summary}\\[2pt]
+{\small Dr Yousef Amer (Adelaide University, Australia) and Neha (Manipal University Jaipur, India).
+Prepared for potential collaborators at Universit\'e PSL. October 2026.}
+
+\section*{1. Overview}
+We study how a kidney exchange programme can match patients fairly over time
+without giving up transplants. Patients with an incompatible living donor, and
+altruistic donors, join a pool. Each month the programme selects cycles and
+chains of transplants. Our setting is the Australian and New Zealand Paired
+Kidney Exchange (ANZKX). From published aggregate statistics, ANZKX performs
+about 50 transplants per year from 60--90 registered pairs, and about 30\% of
+patients are highly sensitised (hard to match). We build a simulation of this
+setting and an optimisation framework that balances transplant volume with three
+fairness criteria. A related paper by the same team is under review. All results
+below come from simulation. They are not clinical results and were not
+validated on patient-level data.
+
+\section*{2. Research gaps we address}
+\begin{enumerate}
+  \item Fairness in kidney exchange is mostly studied within a single clearing
+        round, not over the trajectory of a dynamic pool.
+  \item Fairness is usually a single criterion (for example, priority for highly
+        sensitised patients), not several criteria at once.
+  \item Operational constraints such as exits to deceased-donor transplantation,
+        withdrawals after long waits and cold ischaemia time (CIT) limits are often
+        left out of the optimisation models.
+\end{enumerate}
+
+\section*{3. Our optimisation framework}
+\textbf{Dynamic pool.} Over 25 monthly rounds, matched pairs leave, other patients
+may leave for a deceased-donor transplant (rate $\mu_d$), patients who have waited
+$\tau$ months withdraw ($\tau \in \{6, 12, 18\}$), and new pairs arrive (Poisson,
+rate $\lambda = 10$). Compatibility uses blood type, a virtual crossmatch driven by
+cPRA, and door-to-door transport time against a CIT limit between six regional
+nodes. Cycles have 2--3 pairs; chains start at an altruist and have up to 4
+transplants.\\
+\textbf{Modelling assumptions (not validated ANZKX parameters):} $\mu_d = 0.02$,
+the $\tau$ values, transport times and the 24\,h CIT limit, node weights, the HLA
+mismatch proxy, and $\lambda = 10$. The calibration does not match ANZKX exactly
+(about 65--70 simulated transplants per year against about 50).\\
+\textbf{Objectives.} $F_1$: transplants (maximise). $F_2$: Gini coefficient of
+waiting times after the round. $F_3$: gap between the match rate of highly
+sensitised patients (cPRA $\ge 0.80$) and the overall match rate. $F_4$: gap between
+the match rates of patients at distant and central nodes. $F_2$--$F_4$ are minimised.\\
+\textbf{Exact anchor.} An integer linear program (ILP) gives the maximum number of
+transplants $F_1^*$ in each round. A two-stage ILP then fixes $F_1 = F_1^*$ and
+finds the fairest maximum matching (a weighted sum of $F_2$, $F_3$, $F_4$, each scaled by
+its value in the volume-maximising matching). We use it as a benchmark.\\
+\textbf{ILP-guided NSGA-III.} A many-objective evolutionary algorithm (NSGA-III)
+searches for the Pareto front in each round. An exact ILP solution seeds the search
+and receives priority in the repair step, and an external archive keeps every
+non-dominated matching. Small rounds are solved exactly by enumeration. A bandit
+(UCB1 or LinUCB) adapts the mutation rate. Two guidance variants are under
+evaluation: guidance by the volume-maximising ILP and guidance by the two-stage ILP.
+The choice between them is still under discussion.\\
+\textbf{Selection rule.} From the front, the implemented matching must keep at least
+90\% of $F_1^*$ (other floors are tested). The Price of Fairness (PoF) is the
+percentage of $F_1^*$ given up in a round.\\
+\textbf{Design.} All methods see the same pools, arrivals and exits in each run
+(paired runs). We test with paired Wilcoxon signed-rank tests and Bonferroni correction.
+
+\section*{4. Key findings so far (simulation)}
+Synthetic pools calibrated to ANZKX aggregate statistics, 100 paired runs per
+setting, unless stated. Framework = volume-ILP-guided NSGA-III with the 90\% floor.
+\begin{itemize}
+  \item \textbf{Myopic vs batched clearing.} Clearing every month beat waiting for
+        90 patients at every $\tau$. Batched clearing never cleared at $\tau = 6$, and it
+        made 24\% fewer transplants at $\tau = 12$ and 12\% fewer at $\tau = 18$. At
+        $\tau = 6$, 65.6 highly sensitised patients withdrew under batched clearing against
+        25.5 under myopic clearing. No batching variant we tested beat myopic clearing.
+  \item \textbf{Fairness at almost no volume cost.} Against the volume-maximising
+        ILP, total transplants over 25 rounds did not differ significantly. $F_3$ fell by
+        21.4 / 24.4 / 24.1\% and $F_4$ by 28.1 / 34.0 / 32.3\% ($\tau$ = 6 / 12 / 18).
+        Mean PoF was 1.60 / 1.81 / 1.91\%. It was 8.44\% in round 1 and flat afterwards.
+        About 7.0--8.0 transplants per run were deferred round by round, and 94--100\%
+        of them were made in later rounds.
+  \item \textbf{Two-stage ILP benchmark.} At maximum volume, the exact two-stage ILP
+        found fairer matchings than our framework. On 30 identical pools, it reached
+        $F_3 = 0.0217$ and $F_4 = 0.0348$, against 0.0548 and 0.1143 for the framework's
+        maximum-volume choice. Over every round of fixed trajectories, the framework
+        achieved about 58\% of the possible improvement over the volume ILP. The value of
+        the evolutionary front lies below maximum volume. For example, an 80\% floor gave
+        a further 23\% reduction in $F_3$ for 1.8\% fewer transplants ($\tau = 12$).
+  \item \textbf{Guidance matters.} Without ILP guidance, NSGA-III reached the
+        volume optimum in 0 of 30 pools (32.6 against 42.3 transplants). With guidance it
+        did so in 30 of 30.
+  \item \textbf{PrefLib 00036} (12 real compatibility graphs, simulated arrivals,
+        120 paired units). Transplants did not differ from the ILP (75.03 against 75.38),
+        and the fairness gain was small and not significant ($F_3$ 0.060 against 0.062).
+  \item \textbf{Adaptive operator selection: a negative result.} UCB1 and LinUCB gave
+        the same outcomes, and dynamic and static versions did not differ. Under ILP
+        guidance the bandit did not improve results.
+\end{itemize}
+The framework does not outperform every baseline. The two-stage ILP is stronger at
+maximum volume, and a lexicographic rule that prioritises highly sensitised patients
+gives more such transplants (with a larger $F_3$ gap).
+
+\section*{5. Opportunities for collaboration}
+\begin{tabularx}{\textwidth}{@{}p{4.3cm}X@{}}
+\toprule
+Partner expertise & Concrete joint work \\
+\midrule
+Market design, kidney exchange policy & Clearing frequency and batching rules with
+departure information; comparison with policies in national programmes; dynamic
+matching theory to explain the myopic vs batched results. \\
+Fair division, computational social choice & Axiomatic analysis of the fairness
+criteria and of the selection rule; group fairness vs individual waiting-time
+fairness; fairness definitions over time rather than per round. \\
+Multi-objective combinatorial optimisation & Exact or approximate computation of the
+Pareto front (for example $\varepsilon$-constraint ILPs) to benchmark the evolutionary
+front below maximum volume; scaling beyond pools of a few hundred vertices. \\
+Healthcare operations, health economics & Value of a transplant and of waiting time;
+links between operational constraints (CIT, exits, withdrawals) and outcomes; design
+of a realistic validation study with programme data. \\
+\bottomrule
+\end{tabularx}
+
+\section*{6. Proposed seed project (PSL Global Seed Fund)}
+\textbf{Aim.} Start a joint line of work on fair, dynamic kidney exchange and prepare
+a larger joint grant application.\\
+\textbf{Activities (April 2027 -- March 2028).} A 4--6 week research visit to the PSL
+partner's laboratory; a one-day joint workshop in Paris (or hybrid) with PSL and
+Adelaide researchers; monthly online meetings; a shared code and data repository.\\
+\textbf{Expected outcomes.} At least one joint paper; a joint application to a larger
+scheme (for example a European or bilateral programme); a reusable open simulation
+benchmark for dynamic kidney exchange.\\
+\textbf{Indicative budget (to be adapted to PSL's eligible costs).}
+\begin{tabularx}{\textwidth}{@{}Xr@{}}
+\toprule
+Item & Indicative amount \\
+\midrule
+Research visit to Paris, 4--6 weeks (travel and accommodation) & \texteuro\,5{,}500 \\
+Joint workshop (venue, travel of invited participants) & \texteuro\,3{,}000 \\
+Early-career researcher support (short visit or internship) & \texteuro\,2{,}500 \\
+Dissemination (open-access fees, conference registration) & \texteuro\,1{,}000 \\
+\midrule
+Total (maximum \texteuro\,12{,}000) & \texteuro\,12{,}000 \\
+\bottomrule
+\end{tabularx}\\[3pt]
+\textbf{Value for PSL.} Complementarity: our team brings a calibrated dynamic
+simulation, operational constraints and a tested optimisation pipeline. PSL partners
+bring expertise in market design, social choice or exact multi-objective
+optimisation. The project links PSL with Adelaide University and Manipal
+University Jaipur.\\
+\textbf{Early-career involvement.} Early-career researchers on both sides would take
+part in the visit, the workshop and the joint paper.
+
+\section*{7. The ask and contact}
+Would you consider leading a PSL Global Seed Fund application with Adelaide University
+as the international partner? The current call closes on 8 December 2026 (12:00 Paris
+time). If that is too soon, we would aim for the next call (Spring 2027).
+We would prepare the scientific content and the draft application with you.\\
+\textbf{Contact:} Dr Yousef Amer, Adelaide University,
+\href{mailto:yousef.amer@adelaide.edu.au}{yousef.amer@adelaide.edu.au}.
+
+\end{document}
