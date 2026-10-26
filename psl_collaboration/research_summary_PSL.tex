@@ -7,9 +7,9 @@
 \usepackage{booktabs,tabularx,enumitem}
 \usepackage[hidelinks]{hyperref}
 \setlist{nosep,leftmargin=1.2em}
-\setlength{\parskip}{3pt}
+\setlength{\parskip}{4pt}
 \setlength{\parindent}{0pt}
-\renewcommand{\arraystretch}{1.15}
+\renewcommand{\arraystretch}{1.2}
 \newcolumntype{L}{>{\raggedright\arraybackslash}X}
 
 \begin{document}
@@ -19,62 +19,58 @@
 Prepared for potential collaborators.}
 
 \section*{1. Overview}
-Kidney exchange programmes let patients with a willing but incompatible living donor
-swap donors with other pairs, through short cycles and through chains started by
-altruistic donors. A programme clears its pool repeatedly: each month it selects a set
-of exchanges, matched pairs leave, unmatched patients keep waiting, some withdraw, some
-receive a deceased-donor kidney, and new pairs arrive. Fairness in kidney exchange,
-however, is mostly studied within a single clearing round.
+In a kidney exchange program, patients with a willing but incompatible living donor
+swap donors with other pairs, through short cycles or through chains started by an
+altruistic donor. The pool is cleared again and again. After each clearing, matched
+pairs leave, the rest keep waiting, some withdraw, some receive a deceased-donor
+kidney, and new pairs join. Most studies of fairness, however, look at a single
+clearing round.
 
-Our setting is the Australian and New Zealand Paired Kidney Exchange (ANZKX). Public
-reports show 60--90 registered pairs at any time and 50--66 transplants per year, and
-about 30\% of patients are highly sensitised (hard to match). We built a synthetic
-simulator informed by this public information and a multi-objective framework that
-trades transplant volume against three fairness criteria. Our central question is how
-the price of fairness evolves across sequential clearing rounds under operational
-constraints, and which clearing strategy, myopic or batched, better preserves the
-balance between efficiency and equity over time. A related paper on the static setting
-is under review, and a manuscript on the dynamic setting is in preparation.
+We study this question for the Australian and New Zealand Paired Kidney Exchange
+(ANZKX). Public reports give 60--90 registered pairs at any time and 50--66 transplants
+per year, with about 30\% of patients highly sensitized and therefore hard to match.
+Using this information, we built a synthetic simulator and a multi-objective framework
+that balances the number of transplants against three fairness criteria. We ask two
+things: how the price of fairness changes from one clearing round to the next, and
+whether clearing every month or waiting for a larger pool better preserves the balance
+between efficiency and equity. A paper on the static version of the problem is under
+review; a manuscript on the dynamic version is in preparation.
 
 \textbf{All results below come from synthetic simulation informed by public ANZKX
-information. They are not clinical results and were not validated on patient-level data.}
+information. They are not clinical results and have not been validated on patient-level
+data.}
 
 \section*{2. Research gaps}
-Six gaps in the literature motivate the work. Table~\ref{tab:gaps} lists each gap, how
-we address it, and what we have found so far.
+Six gaps in the literature motivate the work (Table~\ref{tab:gaps}).
 
 \begin{table}[h]
 \small
-\begin{tabularx}{\textwidth}{@{}p{0.5cm}p{3.1cm}LL@{}}
+\begin{tabularx}{\textwidth}{@{}p{0.5cm}p{3.3cm}LL@{}}
 \toprule
- & Gap & How we address it & Finding so far (simulation) \\
+ & Gap & What we do & What we found (simulation) \\
 \midrule
-G1 & Static pool assumption: fairness-aware models treat the pool as fixed.
-   & A dynamic pool over 25 monthly rounds with Poisson arrivals and withdrawal after
+G1 & Fairness-aware models treat the pool as fixed.
+   & Simulate 25 monthly rounds with Poisson arrivals and withdrawal after
      $\tau \in \{6, 12, 18\}$ months.
-   & Fairness gains persist over the whole trajectory, not only in one round. \\
-G2 & Deceased-donor pathway left out of fairness-aware models.
-   & Each waiting patient may leave for a deceased-donor transplant (competing exit,
-     rate $\mu_d$).
-   & Changing $\mu_d$ left the price of fairness unchanged but hurt batched clearing
-     far more than myopic clearing ($-26\%$ vs.\ $-1.6\%$ transplants). \\
-G3 & Logistics constraints absent: inter-hospital cold ischaemia time (CIT) is ignored.
-   & Six regional nodes with door-to-door transport times and a CIT limit; logistics
-     disparity $F_4$ as a modelled proxy.
+   & Fairness gains hold over the whole period, not just in one round. \\
+G2 & The deceased-donor pathway is left out.
+   & Let each waiting patient leave for a deceased-donor transplant at rate $\mu_d$.
+   & A higher exit rate cut transplants by 26\% under batched clearing but by only
+     1.6\% under monthly clearing. \\
+G3 & Transport between hospitals and cold ischemia time (CIT) are ignored.
+   & Model six regional nodes, door-to-door transport times and a CIT limit.
    & A 12\,h CIT limit removed 13--14\% of transplants for every method. \\
-G4 & Clearing strategies compared on volume only.
-   & Myopic and batched clearing compared on all four objectives.
-   & Monthly clearing transplanted more patients, including more highly sensitised
-     patients, than every batching variant tested. \\
-G5 & Price of fairness (PoF) measured only in single rounds.
-   & The trajectory $\{\mathrm{PoF}_t\}_{t=1}^{T}$ and the whole-trajectory loss
-     $\Delta$ against a volume-maximising policy.
-   & PoF is about 2\% per round and does not accumulate; most deferred transplants are
-     made in later rounds. \\
-G6 & Adaptive operator selection (AOS) not examined in dynamic exchange.
-   & Stateless UCB1 and contextual LinUCB select the mutation rate inside NSGA-III.
-   & A negative result: under ILP guidance the two bandits gave the same outcomes and
-     did not beat the best fixed rate. \\
+G4 & Clearing strategies are compared on volume only.
+   & Compare monthly (myopic) and batched clearing on all four objectives.
+   & Monthly clearing gave more transplants, including more for highly sensitized
+     patients, than every batching rule we tried. \\
+G5 & The price of fairness is measured in one round only.
+   & Track the price of fairness in every round and the total loss over the period.
+   & About 2\% per round, with no build-up over time. \\
+G6 & Adaptive operator selection has not been tested in dynamic exchange.
+   & Compare a stateless bandit (UCB1) and a contextual bandit (LinUCB) that choose the
+     mutation rate.
+   & No difference between the two, and neither beat the best fixed rate. \\
 \bottomrule
 \end{tabularx}
 \caption{Research gaps, our approach and current findings.}
@@ -82,122 +78,163 @@ G6 & Adaptive operator selection (AOS) not examined in dynamic exchange.
 \end{table}
 
 \section*{3. Model and methods}
-\textbf{Dynamic pool.} In round $t$ the pool $V_t$ evolves as
-$V_{t+1} = (V_t \setminus M_t \setminus X_t \setminus W_t) \cup A_t$: matched pairs
-$M_t$ leave, patients exit to deceased-donor transplantation with probability $\mu_d$
-($X_t$), patients who have waited $\tau$ months withdraw ($W_t$), and
-$|A_t| \sim \mathrm{Poisson}(\lambda)$ new pairs arrive. Compatibility combines blood
-type, a virtual crossmatch driven by cPRA, and transport time between six regional
-nodes against a CIT limit. Cycles have at most 3 pairs and chains at most 4 transplants.
-Every method faces the same patients through common random numbers.
+\textbf{Pool dynamics.} In each round $t$ the pool changes as
+$V_{t+1} = (V_t \setminus M_t \setminus X_t \setminus W_t) \cup A_t$, where $M_t$ are
+matched pairs, $X_t$ patients who leave for a deceased-donor transplant, $W_t$ patients
+who withdraw after waiting $\tau$ months, and $A_t$ new arrivals
+($|A_t| \sim \mathrm{Poisson}(\lambda)$). Two vertices are compatible if blood type, a
+cPRA-based virtual crossmatch and the transport time between their nodes all allow it.
+Cycles contain at most 3 pairs and chains at most 4 transplants. All methods see the
+same patients in each run.
 
-\textbf{Objectives.} For a matching $M$ with patients $P$, highly sensitised patients
-$S$ (cPRA $\geq 0.80$), and patients at distant ($R$) and central ($U$) nodes:
-$F_1 = |M \cap P|$ (maximised); $F_2$ = Gini coefficient of waiting times after the
-round; $F_3 = \bigl|\,|M \cap S|/|S| - |M \cap P|/|P|\,\bigr|$;
-$F_4 = \bigl|\,|M \cap R|/|R| - |M \cap U|/|U|\,\bigr|$. $F_2$--$F_4$ are minimised.
-The price of fairness in a round is
+\textbf{Objectives.} Each round is a four-objective problem (Table~\ref{tab:obj}).
+For a matching $M$, $P$ is the set of patients, $S$ the highly sensitized patients
+(cPRA $\geq 0.80$), and $R$ and $U$ the patients at distant and central nodes.
+
+\begin{table}[h]
+\small
+\begin{tabularx}{\textwidth}{@{}p{0.6cm}p{3.2cm}p{5.6cm}L@{}}
+\toprule
+ & Objective & Definition & Goal \\
+\midrule
+$F_1$ & Transplant volume & $|M \cap P|$ & Maximize \\
+$F_2$ & Waiting-time equity & Gini coefficient of waiting times after the round & Minimize \\
+$F_3$ & Access gap & $\bigl|\,|M \cap S|/|S| - |M \cap P|/|P|\,\bigr|$
+      & Minimize: highly sensitized patients matched at the same rate as others \\
+$F_4$ & Logistics gap & $\bigl|\,|M \cap R|/|R| - |M \cap U|/|U|\,\bigr|$
+      & Minimize (a modeled proxy, not a validated measure) \\
+\bottomrule
+\end{tabularx}
+\caption{Objectives solved in each clearing round.}
+\label{tab:obj}
+\end{table}
+
+The \textbf{price of fairness} in round $t$ is the share of the maximum possible
+transplants given up for fairness:
 $\mathrm{PoF}_t = 100\,(F_1^{\mathrm{ILP}}(t) - F_1(t))/F_1^{\mathrm{ILP}}(t)$.
 
-\textbf{Framework: ILP-guided NSGA-III.} An integer linear program (ILP) gives the
-maximum number of transplants in each round. Its solution seeds NSGA-III, receives
-priority in the repair step, and is kept in an external archive, so the Pareto front
-always contains a volume-optimal matching. Rounds with at most 200 feasible matchings
-are solved exactly by enumeration. A bandit (UCB1 or LinUCB) chooses the mutation rate
-from the hypervolume gain. The implemented matching keeps at least 90\% of the maximum
-volume (100\% and 80\% floors are also tested) and is closest to the ideal point in
-$(F_2, F_3, F_4)$.
+\textbf{Methods compared.} Table~\ref{tab:methods} lists the main methods. Ten
+configurations in total were run, including static and batched variants.
 
-\textbf{Exact baseline: two-stage ILP.} Stage 1 finds the maximum volume $F_1^*$.
-Stage 2 fixes $F_1 = F_1^*$ and minimises $F_2/r_2 + F_3/r_3 + F_4/r_4$, where each
-$r_k$ is the objective's value in the volume-maximising matching. It returns the fairest
-maximum matching and serves as a stronger baseline for the framework.
+\begin{table}[h]
+\small
+\begin{tabularx}{\textwidth}{@{}p{3.6cm}L@{}}
+\toprule
+Method & How it chooses a matching \\
+\midrule
+ILP-guided NSGA-III (our framework)
+  & An integer linear program (ILP) finds the largest matching. This matching seeds
+    NSGA-III, gets priority in the repair step and is kept in an archive, so the front
+    always contains it. Small rounds ($\leq 200$ feasible matchings) are solved exactly.
+    A bandit sets the mutation rate. The chosen matching keeps at least 90\% of the
+    maximum volume and lies closest to the ideal point in $(F_2, F_3, F_4)$. \\
+Volume ILP & The largest matching in each round. \\
+Two-stage ILP (exact)
+  & Fixes the largest volume $F_1^*$, then minimizes $F_2/r_2 + F_3/r_3 + F_4/r_4$,
+    where $r_k$ is each objective's value in the volume ILP's matching: the fairest
+    matching of maximum size. \\
+Lexicographic rule & Most highly sensitized patients first, then most transplants. \\
+\bottomrule
+\end{tabularx}
+\caption{Main methods compared.}
+\label{tab:methods}
+\end{table}
 
-\textbf{Design.} Ten configurations, three withdrawal thresholds, 100 paired runs each,
-with paired Wilcoxon tests and Bonferroni correction. The framework is compared with the
-two-stage ILP at three levels: identical pools (one round), fixed trajectories (the same
-pool in every round) and full trajectories (each method shapes its own future pools).
-Sensitivity, scalability and out-of-distribution tests (PrefLib dataset 00036) complete
-the evaluation.
+\textbf{Experimental design.} Three withdrawal thresholds, 100 paired runs each, paired
+Wilcoxon tests with Bonferroni correction. The framework and the two-stage ILP are
+compared at three levels: the same pool in one round, the same pool in every round of a
+trajectory, and full trajectories in which each method shapes its own future pools.
+Sensitivity, scalability and out-of-distribution tests on PrefLib dataset 00036 complete
+the evaluation. The exit rate, withdrawal thresholds, transport times, the 24\,h CIT
+limit and the HLA proxy are modeling assumptions, not validated ANZKX parameters. With
+$\lambda = 10$ the simulator gives 65--70 transplants per year, a little above the
+reported 50--66, so we also test $\lambda = 7$ and $\lambda = 13$.
 
-\textbf{Modelling assumptions.} The exit rate, withdrawal thresholds, transport times,
-the 24\,h CIT limit and the HLA proxy are modelling assumptions, not validated ANZKX
-parameters. The arrival rate $\lambda = 10$ gives 65--70 simulated transplants per year,
-somewhat above the reported 50--66, so we also test $\lambda = 7$ and $\lambda = 13$.
+\section*{4. Key findings}
+Table~\ref{tab:findings} summarizes the results (simulation, 100 paired runs unless
+stated otherwise).
 
-\section*{4. Key findings (simulation, 100 paired runs unless stated)}
-\begin{itemize}
-  \item \textbf{Fairness costs little over time.} With monthly clearing, the framework
-        transplanted as many patients as the volume-maximising ILP over 25 rounds, while
-        reducing the high-cPRA access gap $F_3$ by 21--24\%, the logistics gap $F_4$ by
-        28--34\% and waiting-time inequality $F_2$ by 3--4\%. The mean PoF was 1.6--1.9\%
-        per round (8.4\% in the first round, which clears the initial backlog, then
-        flat), and 94--100\% of the per-round shortfall was recovered in later rounds.
-  \item \textbf{Batching did not help.} With a threshold of 90 patients, batched clearing
-        never cleared at $\tau = 6$ (65.6 highly sensitised patients withdrew per run,
-        against 25.5 under monthly clearing) and lost 24\% and 12\% of transplants at
-        $\tau = 12$ and 18. Better-tuned batching narrowed the gap but never closed it.
-  \item \textbf{The exact two-stage ILP is stronger at maximum volume.} On 30 identical
-        pools it reached $F_3 = 0.022$ and $F_4 = 0.035$, against 0.055 and 0.114 for the
-        framework's maximum-volume choice. Over full trajectories it made 1.0--1.3 more
-        transplants per run than the framework with its 90\% floor.
-  \item \textbf{The front is useful below maximum volume.} On trajectory rounds the
-        front contained solutions close to the exact reference at each volume level
-        (at $\tau = 12$ and the 80\% level: 2.167 vs.\ 2.146 on the stage-2 score). An
-        80\% floor lowered $F_3$ by 17--22\% relative to the two-stage ILP for
-        2.1--2.9\% fewer transplants. The floor rule did not always pick the fairest of
-        these solutions, which points to better selection rules.
-  \item \textbf{ILP guidance, not the bandit, drives search quality.} Without guidance,
-        NSGA-III never reached the volume optimum (0 of 30 pools; 32.6 vs.\ 42.3
-        transplants) and its mean PoF was 28.3\%; with guidance it reached the optimum in
-        30 of 30 pools and the PoF fell to 8.2\%.
-  \item \textbf{Cost.} The two-stage ILP needed 5.08\,s per trajectory round against
-        19.30\,s for the framework, but 233.3\,s on 75-vertex pools (67\% of solves
-        time-limited) against 27.2\,s. The exact method returns one matching per volume
-        level; the framework returns the whole front in one run.
-  \item \textbf{PrefLib 00036} (12 real compatibility graphs with simulated arrivals,
-        120 paired runs). Volume matched the ILP (75.03 vs.\ 75.38 transplants), the
-        fairness gain was small ($F_3$ 0.060 vs.\ 0.062, not significant), and the
-        two-stage ILP was again stronger at maximum volume.
-\end{itemize}
-The framework does not outperform every baseline. The two-stage ILP is the better tool
-for the fairest matching at maximum volume, and a lexicographic rule that prioritises
-highly sensitised patients gives them more transplants, at the cost of a larger $F_3$
-gap. The framework's value lies in the trade-off solutions it offers when some volume may
-be given up for fairness.
+\begin{table}[h]
+\small
+\begin{tabularx}{\textwidth}{@{}p{3.6cm}L@{}}
+\toprule
+Question & Result \\
+\midrule
+Does fairness cost transplants over time?
+  & Barely. Clearing monthly, the framework transplanted as many patients as the
+    volume ILP over 25 rounds, while reducing $F_3$ by 21--24\%, $F_4$ by 28--34\% and
+    $F_2$ by 3--4\%. The price of fairness averaged 1.6--1.9\% per round (8.4\% in the
+    first round, then flat), and 94--100\% of deferred transplants were made later. \\
+Monthly or batched clearing?
+  & Monthly. Waiting for 90 patients never triggered a clearing at $\tau = 6$, so 65.6
+    highly sensitized patients withdrew per run against 25.5 under monthly clearing. At
+    $\tau = 12$ and 18, batching lost 24\% and 12\% of transplants. \\
+How does the exact two-stage ILP compare?
+  & It is stronger at maximum volume. On 30 identical pools it reached $F_3 = 0.022$ and
+    $F_4 = 0.035$, against 0.055 and 0.114 for the framework's maximum-volume choice,
+    and over full trajectories it made 1.0--1.3 more transplants per run. \\
+What does the evolutionary front add?
+  & Options below maximum volume. Its solutions were close to the exact reference at
+    each volume level (2.167 vs.\ 2.146 at 80\%, $\tau = 12$), and an 80\% floor lowered
+    $F_3$ by 17--22\% relative to the two-stage ILP for 2.1--2.9\% fewer transplants.
+    The floor rule did not always pick the fairest of these solutions. \\
+What drives search quality?
+  & ILP guidance. Without it, NSGA-III never reached the largest matching (0 of 30
+    pools; 32.6 vs.\ 42.3 transplants) and the price of fairness was 28.3\%; with it,
+    30 of 30 pools and 8.2\%. The bandit did not improve on the best fixed mutation rate. \\
+What does each method cost?
+  & Two-stage ILP: 5.08\,s per trajectory round, but 233.3\,s on 75-vertex pools (67\%
+    of solves time-limited). Framework: 19.30\,s and 27.2\,s. The exact method returns
+    one matching per volume level; the framework returns the whole front in one run. \\
+Do the results carry over to PrefLib?
+  & Partly. On 12 instances of 128--147 vertices (120 paired runs), volume matched the
+    ILP (75.03 vs.\ 75.38), the fairness gain was small and not significant ($F_3$ 0.060
+    vs.\ 0.062), and the two-stage ILP was again stronger at maximum volume. \\
+\bottomrule
+\end{tabularx}
+\caption{Main findings.}
+\label{tab:findings}
+\end{table}
 
-\section*{5. Open questions and opportunities for collaboration}
+\textbf{What this means.} The framework does not outperform every baseline. For the
+fairest matching at maximum volume, the two-stage ILP is the better tool. A
+lexicographic rule gives highly sensitized patients more transplants, but at the cost of
+a larger access gap. The framework is useful when some volume may be traded for
+fairness, because it offers a range of solutions to choose from.
+
+\textbf{Limitations.} The exact solves hit their time limits on 75-vertex pools, so
+their solutions there are the best found rather than proven optima. The framework's
+front is approximate, it could not be run at 500 vertices because of memory limits, and
+its floor rule does not always select the fairest solution. $F_4$ is a proxy.
+
+\section*{5. Open questions for collaboration}
 \begin{tabularx}{\textwidth}{@{}p{4.3cm}L@{}}
 \toprule
-Partner expertise & Joint work \\
+Partner expertise & Possible joint work \\
 \midrule
-Market design, kidney exchange policy & Clearing frequency and batching rules that use
-departure information (G4); comparison with policies in national programmes; dynamic
-matching theory to explain why monthly clearing performed better here. \\
-Fair division, computational social choice & Axiomatic analysis of the three fairness
-criteria and of the selection rule; group versus individual waiting-time fairness;
-fairness defined over time rather than per round (G5). \\
-Multi-objective combinatorial optimisation & Exact or approximate Pareto fronts (for
-example $\varepsilon$-constraint ILPs) to benchmark the evolutionary front below maximum
-volume; selection rules aligned with the stage-2 objective; scaling beyond pools of a few
-hundred vertices. \\
-Healthcare operations, health economics & The deceased-donor pathway and logistics in
-more realistic form (G2, G3); the value of a transplant and of waiting time; design of a
-validation study with programme data, subject to ethics approval. \\
+Market design, kidney exchange policy & Clearing and batching rules that use information
+about departures (G4); comparison with national programs; theory to explain why monthly
+clearing did better here. \\
+Fair division, computational social choice & Axiomatic analysis of the fairness criteria
+and the selection rule; group versus individual fairness; fairness defined over time
+rather than per round (G5). \\
+Multi-objective combinatorial optimization & Exact or approximate Pareto fronts (for
+example $\varepsilon$-constraint ILPs) below maximum volume; selection rules that match
+the exact objective; larger pools. \\
+Healthcare operations, health economics & More realistic deceased-donor and logistics
+models (G2, G3); the value of a transplant and of waiting time; a validation study with
+program data, subject to ethics approval. \\
 \bottomrule
 \end{tabularx}
 
-\section*{6. What we bring and possible next steps}
-\textbf{What we bring.} A dynamic simulation of a kidney exchange pool with operational
-constraints, informed by public ANZKX information; exact ILP and two-stage ILP
-baselines; a tested multi-objective optimisation pipeline with paired-run statistics; and
-open questions that sit between optimisation, market design and fairness.
+\section*{6. What we bring}
+A dynamic simulator of a kidney exchange pool with operational constraints, informed by
+public ANZKX information; exact ILP and two-stage ILP baselines; a tested
+multi-objective pipeline with paired-run statistics; and a set of open questions between
+optimization, market design and fairness.
 
-\textbf{Possible joint work.} Depending on the partner's interests: regular online
-meetings, a short research visit, a joint workshop and a joint paper. If there is mutual
-interest, we would explore a small seed-funding scheme (for example the PSL Global Seed
-Fund, with Adelaide University as the international partner) to start the collaboration,
-and later a larger joint application.
+We would welcome an exchange of ideas on these questions. If there is mutual interest,
+this could begin with an online discussion and grow into joint work on one of them.
 
 \textbf{Contact:} Dr Yousef Amer, Adelaide University,
 \href{mailto:yousef.amer@adelaide.edu.au}{yousef.amer@adelaide.edu.au}.
