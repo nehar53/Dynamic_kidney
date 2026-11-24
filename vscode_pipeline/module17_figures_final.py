@@ -368,7 +368,7 @@ def fig_tradeoff(pools, rounds, out, tau=12):
             for kind, col, mk, ls, name in [("best", BLUE, "o", "-", "Front best ($F_1 \\geq V$)"),
                                             ("pick", VIOLET, "s", "--", "Floor-rule pick at $\\rho$"),
                                             ("exact", AQUA, "D", "-",
-                                             "Exact two-stage ILP, best of solved volumes $\\geq V$")]:
+                                             "Two-stage ILP reference (best found, volumes $\\geq V$)")]:
                 ys, es = [], []
                 for L in LEVELS:
                     col_name = f"{kind}_{m}_{L}"
@@ -392,7 +392,7 @@ def fig_tradeoff(pools, rounds, out, tau=12):
                 cols = [f"exact_status_{L}" for L in LEVELS if L < 100 and f"exact_status_{L}" in d]
                 if cols:
                     tl = float((d[cols] == "time_limit").to_numpy().mean())
-                ax.set_title(f"{title}; exact solves time-limited: {tl:.0%}", loc="left",
+                ax.set_title(f"{title}; ILP solves at time limit: {tl:.0%}", loc="left",
                              fontsize=7.5)
     _legend_below(fig, axes[0][0], ncol=4, dy=-0.05, rect_bottom=0.05)
     _save(fig, out, "fig4_tradeoff_levels")
@@ -598,12 +598,12 @@ def tables(runs, lv, pools, trounds, ood, taus, out, n_runs, results):
                              mm(f"best_F3_{L}"), em("F3", L),
                              f"{(ex == 'time_limit').mean():.2f}" if len(ex) else "--"])
         (out / "tab_tradeoff.tex").write_text(_tex(
-            ["Level $\\rho$", "Options", "Front best", "Rule pick", "Exact ILP, volumes $\\ge V$",
-             "Front best $F_3$", "Exact $F_3$", "ILP time limit"], body,
+            ["Level $\\rho$", "Options", "Front best", "Rule pick", "ILP ref., volumes $\\ge V$",
+             "Front best $F_3$", "ILP ref. $F_3$", "ILP time limit"], body,
             "Fairness available below maximum volume. Level $\\rho$ allows $V = \\lceil \\rho "
             "F_1^* \\rceil$ or more transplants. Options: distinct front solutions with "
             "$F_1 \\ge V$. Scores as in Table~\\ref{tab:three_levels} (lower = fairer); "
-            "exact ILP: best two-stage stage-2 solution among the volumes solved from $V$ up to $F_1^*$ (one solve per level, time-limited; share of solves at the limit in the last column).",
+            "ILP reference: best two-stage stage-2 solution found among the volumes solved from $V$ up to $F_1^*$ (one solve per level, time-limited; share of solves at the limit in the last column).",
             "tab:tradeoff", wide=True), encoding="utf-8")
         written.append("tab_tradeoff.tex")
     # computational cost
@@ -637,7 +637,7 @@ def tables(runs, lv, pools, trounds, ood, taus, out, n_runs, results):
         lv_cols = [f"exact_status_{L}" for L in LEVELS if L < 100 and f"exact_status_{L}" in trounds]
         lv_share = (trounds[lv_cols] == "time_limit").to_numpy()
         lv_share = lv_share[trounds[lv_cols].notna().to_numpy()].mean() if lv_cols else np.nan
-        crow.append(["Exact two-stage ILP at lower volume levels (all levels per round)", "--",
+        crow.append(["Two-stage ILP at lower volume levels (all levels per round)", "--",
                      f"{lv_share:.2f}",
                      f"{trounds['exact_sec_total'].mean():.2f}", "--"])
     (out / "tab_cost.tex").write_text(_tex(
