@@ -368,7 +368,7 @@ def fig_tradeoff(pools, rounds, out, tau=12):
             for kind, col, mk, ls, name in [("best", BLUE, "o", "-", "Front best ($F_1 \\geq V$)"),
                                             ("pick", VIOLET, "s", "--", "Floor-rule pick at $\\rho$"),
                                             ("exact", AQUA, "D", "-",
-                                             "Two-stage ILP reference (best found, volumes $\\geq V$)")]:
+                                             "Two-stage ILP, best found over volumes $\\geq V$")]:
                 ys, es = [], []
                 for L in LEVELS:
                     col_name = f"{kind}_{m}_{L}"
