@@ -97,7 +97,8 @@ def _style():
 
 def _save(fig, out: Path, name: str):
     out.mkdir(parents=True, exist_ok=True)
-    for ext in ("png", "pdf"):
+    plt.rcParams["svg.fonttype"] = "none"     # editable text in the SVG
+    for ext in ("png", "pdf", "svg", "eps"):
         fig.savefig(out / f"{name}.{ext}")
     plt.close(fig)
     print(f"  {out / (name + '.png')}")
